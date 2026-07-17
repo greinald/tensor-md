@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 import time
 
@@ -102,6 +103,16 @@ class SpatialPatchLayout:
 
 def find_data_root() -> Path:
     """Locate the MVTec dataset directory used by the notebook."""
+
+    configured_root = os.environ.get("MVTEC_DATA_ROOT")
+    if configured_root:
+        candidate = Path(configured_root).expanduser().resolve()
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+        raise FileNotFoundError(
+            "MVTEC_DATA_ROOT is set but does not point to an existing directory: "
+            f"{candidate}"
+        )
 
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent

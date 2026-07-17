@@ -34,8 +34,23 @@ mean and separable covariance model and produces a scalar score for each test
 patch. The neighbourhood subclass optionally pools the already-computed scores
 on the spatial grid.
 
+Fitted detectors can be saved and restored, including all fitted means,
+covariance factors, shrinkage state, and score-calibration statistics:
+
+```python
+detector.fit(train_patches)
+detector.save("models/bottle.pkl")
+
+restored = LocationAwareTensorMahalanobisDetector.load("models/bottle.pkl")
+scores = restored.score(test_patches)
+```
+
+Model files use Python pickle and must only be loaded from a trusted source.
+
 The MVTec dataset is not bundled with the package. See `REPRODUCIBILITY.md`
-for the expected layout and the official evaluator command.
+for the expected layout and the official evaluator command. The loader accepts
+an explicit `PatchExtractionConfig(data_root=...)` or the `MVTEC_DATA_ROOT`
+environment variable.
 
 ## Release
 

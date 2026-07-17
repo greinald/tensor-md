@@ -1,6 +1,6 @@
 """Public package API for the tensor-valued anomaly detector."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .Data_Loading import PatchExtractionConfig, load_patch_datasets
 from .location_aware_tensor_mahalanobis_detector import (

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import os
+from pathlib import Path
+import pickle
 import time
 
 import numpy as np
@@ -345,6 +347,62 @@ class LocationAwareTensorMahalanobisDetector:
     def _log(self, message: str) -> None:
         if self.verbose:
             print(f"[LocationAwareTensorMahalanobisDetector] {message}")
+
+    def save(self, path: str | os.PathLike[str]) -> Path:
+        """Persist a fitted detector to *path*.
+
+        The saved file is a trusted-file pickle containing the detector
+        configuration and fitted NumPy state.  Loading arbitrary pickle files
+        is unsafe; only load files created by this package (or otherwise
+        explicitly trusted by the caller).
+        """
+
+        if self.location_means is None or self.location_covariance_states is None:
+            raise RuntimeError("Call fit() before save().")
+        target = Path(path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "format": "tensor-md.detector",
+            "format_version": 1,
+            "class_name": type(self).__name__,
+            "state": self.__dict__,
+        }
+        with target.open("wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        return target
+
+    save_model = save
+
+    @classmethod
+    def load(cls, path: str | os.PathLike[str]):
+        """Load a detector previously written by :meth:`save`.
+
+        Pickle is used because fitted covariance states contain nested NumPy
+        arrays and timing metadata.  Never load an untrusted file.
+        """
+
+        source = Path(path).expanduser()
+        with source.open("rb") as handle:
+            payload = pickle.load(handle)
+        if not isinstance(payload, dict) or payload.get("format") != "tensor-md.detector":
+            raise ValueError(f"{source} is not a tensor-md detector file.")
+        if payload.get("format_version") != 1:
+            raise ValueError(
+                f"Unsupported tensor-md detector format version: {payload.get('format_version')!r}."
+            )
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise ValueError(f"{source} contains no valid detector state.")
+        stored_class = payload.get("class_name")
+        if stored_class != cls.__name__ and cls is not LocationAwareTensorMahalanobisDetector:
+            raise TypeError(
+                f"{source} contains {stored_class!r}, not {cls.__name__!r}."
+            )
+        detector = cls.__new__(cls)
+        detector.__dict__.update(state)
+        return detector
+
+    load_model = load
 
     def _log_batch_progress(
         self,
