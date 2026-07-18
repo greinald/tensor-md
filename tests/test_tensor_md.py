@@ -13,7 +13,10 @@ from tensor_md import (
     load_normal_patches,
     load_image_patches,
 )
-from tensor_md.Data_Loading import resolve_data_root
+from tensor_md.Data_Loading import (
+    _align_and_stack_feature_map_batches,
+    resolve_data_root,
+)
 from tensor_md.patch_estimators import (
     _fit_tensor_separable_model_from_centered,
     _score_tensor_separable_model,
@@ -102,6 +105,55 @@ def test_custom_cnn_extractor_is_used_without_framework_specific_backbone():
     maps = extract_cnn_feature_maps(images, config)
     assert maps.shape == (3, 4, 4, 1)
     np.testing.assert_allclose(maps, images[:, ::2, ::2, :1])
+
+
+def test_multilayer_fusion_requires_equal_channels_without_reduction():
+    feature_maps = [
+        np.zeros((2, 4, 4, 3), dtype=np.float32),
+        np.zeros((2, 4, 4, 5), dtype=np.float32),
+    ]
+    config = PatchExtractionConfig(cnn_layer_names=("layer_a", "layer_b"))
+
+    with pytest.raises(ValueError, match="different channel counts"):
+        _align_and_stack_feature_map_batches(feature_maps, config)
+
+
+def test_random_reduction_rejects_dimension_larger_than_any_layer():
+    feature_maps = [
+        np.zeros((2, 4, 4, 3), dtype=np.float32),
+        np.zeros((2, 4, 4, 5), dtype=np.float32),
+    ]
+    config = PatchExtractionConfig(
+        cnn_layer_names=("layer_a", "layer_b"),
+        cnn_dimensionality_reduction="random",
+        cnn_reduction_dimensions=4,
+    )
+
+    with pytest.raises(ValueError, match="has only 3 channels"):
+        _align_and_stack_feature_map_batches(feature_maps, config)
+
+
+def test_pca_reduction_rejects_dimension_larger_than_layer(tmp_path):
+    normal_dir = tmp_path / "normal"
+    normal_dir.mkdir()
+    Image.fromarray(np.full((8, 8, 3), 120, dtype=np.uint8)).save(normal_dir / "one.png")
+
+    def extractor(batch):
+        return [batch[:, ::2, ::2, :3], np.concatenate((batch, batch[..., :2]), axis=-1)]
+
+    config = PatchExtractionConfig(
+        train_image_dir=normal_dir,
+        image_size=(8, 8),
+        patch_size=(8, 8),
+        input_representation="cnn_features",
+        cnn_feature_extractor=extractor,
+        cnn_layer_names=("layer_a", "layer_b"),
+        cnn_dimensionality_reduction="pca",
+        cnn_reduction_dimensions=4,
+    )
+
+    with pytest.raises(ValueError, match="has only 3 channels"):
+        load_normal_patches(config)
 
 
 def test_keras_convenience_adapter_accepts_direct_model():

@@ -263,6 +263,25 @@ def validate_config(config: PatchExtractionConfig) -> None:
         raise ValueError("PCA reduction cannot be combined with random fusion channels.")
     if config.cnn_dimensionality_reduction == "random" and config.cnn_pca_components is not None:
         raise ValueError("Random reduction cannot be combined with PCA components.")
+    reduction_method = _configured_reduction_method(config)
+    if reduction_method == "pca" and (
+        config.cnn_reduction_dimensions is None
+        and config.cnn_pca_components is None
+    ):
+        raise ValueError(
+            "PCA reduction requires cnn_reduction_dimensions."
+        )
+    if reduction_method == "random" and (
+        config.cnn_reduction_dimensions is None
+        and config.cnn_fusion_channels is None
+    ):
+        raise ValueError(
+            "Random reduction requires cnn_reduction_dimensions."
+        )
+    if reduction_method == "none" and config.cnn_reduction_dimensions is not None:
+        raise ValueError(
+            "cnn_reduction_dimensions cannot be set when dimensionality reduction is 'none'."
+        )
     if config.cnn_pca_components is not None:
         if isinstance(config.cnn_pca_components, int):
             pca_components = (config.cnn_pca_components,)
@@ -1151,6 +1170,12 @@ def _fit_pca_from_training_feature_maps(
         for layer_index, (pca, feature_map_batch, n_components) in enumerate(
             zip(pcas, raw_maps_list, components_by_layer, strict=True)
         ):
+            channel_count = feature_map_batch.shape[-1]
+            if n_components > channel_count:
+                raise ValueError(
+                    f"Requested {n_components} reduced channels for CNN layer "
+                    f"{layer_index}, but that layer has only {channel_count} channels."
+                )
             # Feed images to IncrementalPCA in the original deterministic order.
             # CNN inference is batched, but PCA chunk boundaries remain independent
             # of cnn_batch_size so changing throughput does not change the model.
@@ -1203,12 +1228,12 @@ def _align_and_stack_feature_maps(
     """Resize multiple feature maps to a shared grid and combine them consistently."""
 
     target_h, target_w = feature_maps[0].shape[:2]
-    tf = _import_tensorflow()
     resized_maps = []
     for feature_map in feature_maps:
         if feature_map.shape[:2] == (target_h, target_w):
             resized_maps.append(np.asarray(feature_map, dtype=np.float32, copy=False))
         else:
+            tf = _import_tensorflow()
             resized_maps.append(
                 np.asarray(
                     tf.image.resize(feature_map, (target_h, target_w), method="bilinear").numpy(),
@@ -1276,12 +1301,12 @@ def _align_and_stack_feature_map_batches(
         raise ValueError("All feature-map batches must contain the same number of images.")
 
     target_h, target_w = feature_maps[0].shape[1:3]
-    tf = _import_tensorflow()
     resized_maps = []
     for feature_map in feature_maps:
         if feature_map.shape[1:3] == (target_h, target_w):
             resized_maps.append(np.asarray(feature_map, dtype=np.float32, copy=False))
         else:
+            tf = _import_tensorflow()
             resized_maps.append(
                 np.asarray(
                     tf.image.resize(
@@ -1443,7 +1468,7 @@ def extract_cnn_feature_maps(
 
     raw_feature_maps = _extract_raw_cnn_feature_maps_batch(images, config)
     if not isinstance(raw_feature_maps, list):
-        if config.cnn_pca_components is None:
+        if _configured_reduction_method(config) != "pca":
             return raw_feature_maps
         layer_pca = _ensure_layer_pcas(config)[0]
         return transform_channel_pca(
@@ -1453,7 +1478,7 @@ def extract_cnn_feature_maps(
         )
 
     feature_maps = raw_feature_maps
-    if config.cnn_pca_components is not None:
+    if _configured_reduction_method(config) == "pca":
         layer_pcas = _ensure_layer_pcas(config)
         feature_maps = [
             transform_channel_pca(
