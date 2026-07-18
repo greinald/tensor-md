@@ -404,6 +404,21 @@ class LocationAwareTensorMahalanobisDetector:
 
     load_model = load
 
+    def save_score_diagnostics(self, scores, output_dir, **kwargs):
+        """Save optional score files and visual diagnostics without evaluation."""
+
+        try:
+            from .diagnostics import save_score_diagnostics
+        except ImportError:
+            from diagnostics import save_score_diagnostics
+
+        return save_score_diagnostics(
+            scores,
+            output_dir,
+            patches_per_image=self.patches_per_image,
+            **kwargs,
+        )
+
     def _log_batch_progress(
         self,
         phase: str,

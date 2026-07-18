@@ -8,6 +8,7 @@ from tensor_md import (
     NeighborhoodScoreLocationAwareTensorMahalanobisDetector,
     PatchExtractionConfig,
     make_cnn_feature_extractor,
+    save_score_diagnostics,
     load_patch_datasets,
     load_normal_patches,
     load_image_patches,
@@ -172,3 +173,17 @@ def test_generic_api_needs_only_image_directories(tmp_path):
     normal = load_normal_patches(config)
     other = load_image_patches(new_dir, config)
     assert normal.patches.shape == other.patches.shape
+
+
+def test_score_diagnostics_formats_are_selectable(tmp_path):
+    result = save_score_diagnostics(
+        np.arange(8, dtype=np.float32),
+        tmp_path,
+        patches_per_image=4,
+        grid_shape=(2, 2),
+        formats=("npy", "json"),
+    )
+    assert set(result) == {"scores", "manifest"}
+    assert (tmp_path / "scores.npy").exists()
+    assert (tmp_path / "scores.json").exists()
+    assert not (tmp_path / "scores.csv").exists()

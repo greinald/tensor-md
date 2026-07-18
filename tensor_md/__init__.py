@@ -14,6 +14,7 @@ from .location_aware_tensor_mahalanobis_detector import (
     LocationAwareTensorMahalanobisDetector,
     NeighborhoodScoreLocationAwareTensorMahalanobisDetector,
 )
+from .diagnostics import save_score_diagnostics
 from .patch_estimators import TensorGaussianState
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "PatchExtractionConfig",
     "extract_cnn_feature_maps",
     "make_cnn_feature_extractor",
+    "save_score_diagnostics",
     "load_patch_datasets",
     "load_normal_patches",
     "load_image_patches",

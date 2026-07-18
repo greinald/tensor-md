@@ -100,6 +100,20 @@ other = load_image_patches("data/images_to_check", config)
 scores = detector.score(other.patches)
 ```
 
+Optional diagnostics can be saved in only the formats a user wants:
+
+```python
+detector.save_score_diagnostics(
+    scores,
+    "outputs/debug",
+    grid_shape=(8, 8),
+    formats=("npy", "json", "distribution", "heatmaps"),
+)
+```
+
+Available formats are `npy`, `csv`, `json`, `distribution`, and `heatmaps`.
+These files are for inspection only and do not replace the official evaluator.
+
 For convenience, Keras and PyTorch models can be adapted without writing a
 layout-conversion wrapper:
 
