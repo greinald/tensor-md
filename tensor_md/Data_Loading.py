@@ -21,7 +21,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 class PatchExtractionConfig:
     """Configuration for loading one MVTec category as patch tensors."""
 
-    category: str
+    category: str = "custom"
     data_root: Path | None = None
     train_image_dir: Path | None = None
     test_image_dir: Path | None = None
@@ -2170,3 +2170,33 @@ def load_normal_patches(config: PatchExtractionConfig) -> PatchDataset:
     validate_config(config)
     category_root = resolve_category_root(config)
     return build_training_dataset(category_root, config)
+
+
+def load_image_patches(
+    image_dir: str | os.PathLike[str],
+    config: PatchExtractionConfig,
+    *,
+    max_images: int | None = None,
+) -> PatchDataset:
+    """Load patches from any image directory for later scoring.
+
+    This function does not require labels or an MVTec category. It reuses the
+    same preprocessing, CNN extractor, PCA projections, and patch geometry as
+    the normal-training loader. Returned labels are all zero because scoring
+    itself is label-free.
+    """
+
+    validate_config(config)
+    directory = Path(image_dir).expanduser().resolve()
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Image directory was not found: {directory}")
+    paths = maybe_limit(list_images(directory), max_images)
+    if not paths:
+        raise ValueError(f"No supported images were found in {directory}.")
+    return build_patch_dataset_from_paths(
+        image_paths=paths,
+        category_root=directory,
+        config=config,
+        include_test_masks=False,
+        split_name="images",
+    )

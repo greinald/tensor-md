@@ -7,6 +7,7 @@ from .Data_Loading import (
     extract_cnn_feature_maps,
     load_patch_datasets,
     load_normal_patches,
+    load_image_patches,
     make_cnn_feature_extractor,
 )
 from .location_aware_tensor_mahalanobis_detector import (
@@ -22,6 +23,7 @@ __all__ = [
     "make_cnn_feature_extractor",
     "load_patch_datasets",
     "load_normal_patches",
+    "load_image_patches",
     "LocationAwareTensorMahalanobisDetector",
     "NeighborhoodScoreLocationAwareTensorMahalanobisDetector",
     "TensorGaussianState",

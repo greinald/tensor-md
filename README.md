@@ -28,6 +28,7 @@ from tensor_md import (
     extract_cnn_feature_maps,
     load_patch_datasets,
     load_normal_patches,
+    load_image_patches,
     make_cnn_feature_extractor,
 )
 ```
@@ -82,7 +83,6 @@ For unsupervised use, no test split is needed:
 ```python
 normal = load_normal_patches(
     PatchExtractionConfig(
-        category="custom",
         train_image_dir="data/normal_images",
         input_representation="cnn_features",
         cnn_feature_extractor=extractor,
@@ -92,7 +92,13 @@ detector.fit(normal.patches)
 ```
 
 The detector learns only from these normal patches. Later images are scored
-with `detector.score(...)`; no labels are required.
+with `load_image_patches(...)` and `detector.score(...)`; no labels are
+required:
+
+```python
+other = load_image_patches("data/images_to_check", config)
+scores = detector.score(other.patches)
+```
 
 For convenience, Keras and PyTorch models can be adapted without writing a
 layout-conversion wrapper:
