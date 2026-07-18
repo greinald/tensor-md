@@ -9,6 +9,7 @@ and tag.  Pushing the tag starts the trusted PyPI publishing workflow.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import subprocess
 import sys
@@ -62,6 +63,16 @@ def require_clean_checkout() -> None:
         )
 
 
+def ensure_release_tools() -> None:
+    """Install the local test and distribution tools when the active Python lacks them."""
+
+    required_modules = ("pytest", "build", "twine")
+    missing = [name for name in required_modules if importlib.util.find_spec(name) is None]
+    if missing:
+        print("Installing release tools for the active Python environment:", ", ".join(missing))
+        run(sys.executable, "-m", "pip", "install", ".[test]", "build", "twine")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build, tag, and publish a tensor-md release.")
     version_group = parser.add_mutually_exclusive_group()
@@ -96,6 +107,7 @@ def main() -> None:
     PYPROJECT.write_text(replace_version(original_pyproject, next_version), encoding="utf-8")
     committed = False
     try:
+        ensure_release_tools()
         run(sys.executable, "-m", "pytest", "-q")
         with tempfile.TemporaryDirectory(prefix="tensor-md-release-") as temp_dir:
             run(sys.executable, "-m", "build", "--outdir", temp_dir)
