@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from PIL import Image
 
 from tensor_md import (
     extract_cnn_feature_maps,
@@ -7,6 +8,7 @@ from tensor_md import (
     NeighborhoodScoreLocationAwareTensorMahalanobisDetector,
     PatchExtractionConfig,
     make_cnn_feature_extractor,
+    load_patch_datasets,
 )
 from tensor_md.Data_Loading import resolve_data_root
 from tensor_md.patch_estimators import (
@@ -109,3 +111,27 @@ def test_keras_convenience_adapter_accepts_direct_model():
     extractor = make_cnn_feature_extractor(FakeKerasModel(), framework="keras")
     maps = extractor(images)
     assert maps.shape == (2, 4, 4, 1)
+
+
+def test_generic_train_and_test_directories_are_supported(tmp_path):
+    train_dir = tmp_path / "normal_train"
+    test_dir = tmp_path / "evaluation"
+    (test_dir / "normal").mkdir(parents=True)
+    (test_dir / "defect").mkdir(parents=True)
+    train_dir.mkdir()
+    image = np.full((8, 8, 3), 120, dtype=np.uint8)
+    Image.fromarray(image).save(train_dir / "train.png")
+    Image.fromarray(image).save(test_dir / "normal" / "good.png")
+    Image.fromarray(image).save(test_dir / "defect" / "bad.png")
+    config = PatchExtractionConfig(
+        category="custom",
+        train_image_dir=train_dir,
+        test_image_dir=test_dir,
+        image_size=(8, 8),
+        patch_size=(4, 4),
+        stride=4,
+    )
+    datasets = load_patch_datasets(config)
+    assert len(datasets.train.image_paths) == 1
+    assert len(datasets.test.image_paths) == 2
+    assert set(datasets.test.labels.tolist()) == {0, 1}

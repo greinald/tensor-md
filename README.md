@@ -60,6 +60,22 @@ config = PatchExtractionConfig(
 ResNet50, WideResNet, and YOLO adapters remain available as conveniences; they
 are not requirements of the tensor detector.
 
+The loader can also use ordinary folders instead of an MVTec category:
+
+```python
+config = PatchExtractionConfig(
+    category="custom",
+    train_image_dir="data/normal_train",
+    test_image_dir="data/test",  # subfolders named normal/good are label 0
+    input_representation="cnn_features",
+    cnn_feature_extractor=extractor,
+)
+datasets = load_patch_datasets(config)
+```
+
+Training images are all treated as normal. Test images in `normal` or `good`
+subfolders receive label 0; images in other test subfolders receive label 1.
+
 For convenience, Keras and PyTorch models can be adapted without writing a
 layout-conversion wrapper:
 

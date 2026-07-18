@@ -23,6 +23,8 @@ class PatchExtractionConfig:
 
     category: str
     data_root: Path | None = None
+    train_image_dir: Path | None = None
+    test_image_dir: Path | None = None
     image_size: tuple[int, int] = (256, 256)
     patch_size: tuple[int, int] = (16, 16)
     stride: int = 4
@@ -414,6 +416,12 @@ def resolve_data_root(config: PatchExtractionConfig) -> Path:
 
 def resolve_category_root(config: PatchExtractionConfig) -> Path:
     """Return the category root and check that it exists."""
+
+    if config.train_image_dir is not None:
+        train_dir = Path(config.train_image_dir).expanduser().resolve()
+        if not train_dir.is_dir():
+            raise FileNotFoundError(f"Training image directory was not found: {train_dir}")
+        return train_dir.parent
 
     data_root = resolve_data_root(config)
     category_root = data_root / config.category
@@ -1751,6 +1759,7 @@ def build_patch_dataset_from_paths(
     config: PatchExtractionConfig,
     include_test_masks: bool,
     split_name: str,
+    forced_image_labels: np.ndarray | None = None,
 ) -> PatchDataset:
     """Build a patch dataset with one final allocation instead of list concatenation."""
 
@@ -1838,6 +1847,15 @@ def build_patch_dataset_from_paths(
             patches[start:end] = image_patches
             labels[start:end] = image_labels
 
+    if forced_image_labels is not None:
+        forced_image_labels = np.asarray(forced_image_labels, dtype=np.int8)
+        if forced_image_labels.shape != (len(image_paths),):
+            raise ValueError(
+                "forced_image_labels must contain exactly one label per image: "
+                f"got {forced_image_labels.shape} for {len(image_paths)} images."
+            )
+        labels[:] = np.repeat(forced_image_labels, patches_per_image)
+
     return PatchDataset(
         patches=patches,
         labels=labels,
@@ -1910,6 +1928,12 @@ def build_feature_map_dataset_from_paths(
 
 def training_image_paths(category_root: Path, config: PatchExtractionConfig) -> list[Path]:
     """Return limited normal training image paths for one category."""
+
+    if config.train_image_dir is not None:
+        return maybe_limit(
+            list_images(Path(config.train_image_dir).expanduser().resolve()),
+            config.max_train_images,
+        )
 
     return maybe_limit(
         list_images(category_root / "train" / "good"),
@@ -2010,6 +2034,30 @@ def build_training_feature_map_dataset(
 
 def build_test_dataset(category_root: Path, config: PatchExtractionConfig) -> PatchDataset:
     """Build test patches from good and anomalous MVTec test images."""
+
+    if config.test_image_dir is not None:
+        test_dir = Path(config.test_image_dir).expanduser().resolve()
+        if not test_dir.is_dir():
+            raise FileNotFoundError(f"Test image directory was not found: {test_dir}")
+        test_paths = maybe_limit(
+            list_images(test_dir),
+            config.max_test_good_images,
+        )
+        test_labels = np.asarray(
+            [
+                0 if path.parent.name.lower() in {"good", "normal"} else 1
+                for path in test_paths
+            ],
+            dtype=np.int8,
+        )
+        return build_patch_dataset_from_paths(
+            image_paths=test_paths,
+            category_root=category_root,
+            config=config,
+            include_test_masks=False,
+            split_name="test",
+            forced_image_labels=test_labels,
+        )
 
     test_paths = []
     good_paths = maybe_limit(
