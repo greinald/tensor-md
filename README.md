@@ -88,7 +88,7 @@ normal = load_normal_patches(
         cnn_feature_extractor=extractor,
     )
 )
-detector.fit(normal.patches)
+detector.fit(normal)
 ```
 
 The detector learns only from these normal patches. Later images are scored
@@ -97,7 +97,7 @@ required:
 
 ```python
 other = load_image_patches("data/images_to_check", config)
-scores = detector.score(other.patches)
+scores = detector.score(other)
 ```
 
 Optional diagnostics can be saved in only the formats a user wants:

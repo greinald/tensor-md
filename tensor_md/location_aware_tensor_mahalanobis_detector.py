@@ -348,6 +348,14 @@ class LocationAwareTensorMahalanobisDetector:
         if self.verbose:
             print(f"[LocationAwareTensorMahalanobisDetector] {message}")
 
+    @staticmethod
+    def _coerce_patches(patches) -> np.ndarray:
+        """Accept either a patch array or a PatchDataset-like object."""
+
+        if hasattr(patches, "patches"):
+            patches = patches.patches
+        return np.asarray(patches)
+
     def save(self, path: str | os.PathLike[str]) -> Path:
         """Persist a fitted detector to *path*.
 
@@ -453,7 +461,7 @@ class LocationAwareTensorMahalanobisDetector:
         )
 
     def _reshape_by_image(self, patches: np.ndarray) -> np.ndarray:
-        patches = np.asarray(patches)
+        patches = self._coerce_patches(patches)
         if patches.ndim < 1:
             raise ValueError(f"patches must have a sample axis, got shape {patches.shape}.")
         if len(patches) == 0:
@@ -922,7 +930,7 @@ class LocationAwareTensorMahalanobisDetector:
         self._validate_shrinkage()
         self._validate_score_normalization()
 
-        patches = np.asarray(patches)
+        patches = self._coerce_patches(patches)
         if patches.ndim < 4:
             raise ValueError(
                 "patches must have shape (samples, patch_h, patch_w, channels"
@@ -1011,7 +1019,7 @@ class LocationAwareTensorMahalanobisDetector:
         if self.location_means is None or self.location_covariance_states is None:
             raise RuntimeError("Call fit() before score().")
 
-        patches = np.asarray(patches)
+        patches = self._coerce_patches(patches)
         expected_sample_shape = tuple(self.location_means.shape[1:])
         if tuple(patches.shape[1:]) != expected_sample_shape:
             raise ValueError(

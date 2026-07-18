@@ -187,3 +187,17 @@ def test_score_diagnostics_formats_are_selectable(tmp_path):
     assert (tmp_path / "scores.npy").exists()
     assert (tmp_path / "scores.json").exists()
     assert not (tmp_path / "scores.csv").exists()
+
+
+def test_detector_accepts_patch_dataset_objects():
+    from types import SimpleNamespace
+
+    patches = _small_patch_dataset()
+    dataset = SimpleNamespace(patches=patches)
+    detector = LocationAwareTensorMahalanobisDetector(
+        patches_per_image=4,
+        iterations=2,
+        location_fit_workers=1,
+    ).fit(dataset)
+    scores = detector.score(dataset)
+    assert scores.shape == (len(patches),)
