@@ -9,6 +9,7 @@ from tensor_md import (
     PatchExtractionConfig,
     make_cnn_feature_extractor,
     load_patch_datasets,
+    load_normal_patches,
 )
 from tensor_md.Data_Loading import resolve_data_root
 from tensor_md.patch_estimators import (
@@ -135,3 +136,19 @@ def test_generic_train_and_test_directories_are_supported(tmp_path):
     assert len(datasets.train.image_paths) == 1
     assert len(datasets.test.image_paths) == 2
     assert set(datasets.test.labels.tolist()) == {0, 1}
+
+
+def test_normal_only_loader_needs_no_test_directory(tmp_path):
+    train_dir = tmp_path / "normal_images"
+    train_dir.mkdir()
+    Image.fromarray(np.full((8, 8, 3), 120, dtype=np.uint8)).save(train_dir / "one.png")
+    config = PatchExtractionConfig(
+        category="custom",
+        train_image_dir=train_dir,
+        image_size=(8, 8),
+        patch_size=(4, 4),
+        stride=4,
+    )
+    dataset = load_normal_patches(config)
+    assert dataset.patches.shape == (4, 4, 4, 3)
+    assert np.all(dataset.labels == 0)

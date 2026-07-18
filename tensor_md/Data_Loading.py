@@ -2156,3 +2156,17 @@ def load_patch_datasets(config: PatchExtractionConfig) -> PatchDatasets:
             mask_path_for_test_image_fn=mask_path_for_test_image,
         )
     return datasets
+
+
+def load_normal_patches(config: PatchExtractionConfig) -> PatchDataset:
+    """Load patches from normal images for unsupervised model fitting.
+
+    Set ``train_image_dir`` for a generic normal-image folder, or use the
+    standard MVTec ``category/train/good`` layout. No labels or test images are
+    required; the returned dataset keeps an all-zero label array only for
+    compatibility with :class:`PatchDataset`.
+    """
+
+    validate_config(config)
+    category_root = resolve_category_root(config)
+    return build_training_dataset(category_root, config)

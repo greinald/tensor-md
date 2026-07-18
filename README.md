@@ -27,6 +27,7 @@ from tensor_md import (
     PatchExtractionConfig,
     extract_cnn_feature_maps,
     load_patch_datasets,
+    load_normal_patches,
     make_cnn_feature_extractor,
 )
 ```
@@ -75,6 +76,23 @@ datasets = load_patch_datasets(config)
 
 Training images are all treated as normal. Test images in `normal` or `good`
 subfolders receive label 0; images in other test subfolders receive label 1.
+
+For unsupervised use, no test split is needed:
+
+```python
+normal = load_normal_patches(
+    PatchExtractionConfig(
+        category="custom",
+        train_image_dir="data/normal_images",
+        input_representation="cnn_features",
+        cnn_feature_extractor=extractor,
+    )
+)
+detector.fit(normal.patches)
+```
+
+The detector learns only from these normal patches. Later images are scored
+with `detector.score(...)`; no labels are required.
 
 For convenience, Keras and PyTorch models can be adapted without writing a
 layout-conversion wrapper:
