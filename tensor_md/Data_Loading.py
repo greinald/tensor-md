@@ -49,6 +49,8 @@ class PatchExtractionConfig:
     cnn_feature_extractor: Callable[[np.ndarray], Any] | Any | None = None
     cnn_layer_name: str = "conv3_block4_out"
     cnn_layer_names: tuple[str, ...] | None = None
+    cnn_dimensionality_reduction: str | None = None
+    cnn_reduction_dimensions: int | None = None
     cnn_pca_components: int | tuple[int, ...] | None = None
     cnn_pca_chunk_size: int = 20000
     cnn_fusion_channels: int | None = None
@@ -247,6 +249,20 @@ def validate_config(config: PatchExtractionConfig) -> None:
         raise ValueError(
             f"cnn_pca_chunk_size must be positive, got {config.cnn_pca_chunk_size}"
         )
+    if config.cnn_dimensionality_reduction not in {None, "pca", "random", "none"}:
+        raise ValueError(
+            "cnn_dimensionality_reduction must be 'pca', 'random', 'none', or None, "
+            f"got {config.cnn_dimensionality_reduction!r}"
+        )
+    if config.cnn_reduction_dimensions is not None and config.cnn_reduction_dimensions <= 0:
+        raise ValueError(
+            "cnn_reduction_dimensions must be positive, "
+            f"got {config.cnn_reduction_dimensions}"
+        )
+    if config.cnn_dimensionality_reduction == "pca" and config.cnn_fusion_channels is not None:
+        raise ValueError("PCA reduction cannot be combined with random fusion channels.")
+    if config.cnn_dimensionality_reduction == "random" and config.cnn_pca_components is not None:
+        raise ValueError("Random reduction cannot be combined with PCA components.")
     if config.cnn_pca_components is not None:
         if isinstance(config.cnn_pca_components, int):
             pca_components = (config.cnn_pca_components,)
@@ -339,8 +355,15 @@ def transform_channel_pca(patches, pca, batch_size=20000):
 def _configured_pca_components(config: PatchExtractionConfig) -> tuple[int, ...] | None:
     """Return PCA components aligned to configured CNN layers."""
 
-    if config.cnn_pca_components is None:
+    if _configured_reduction_method(config) != "pca":
         return None
+    if config.cnn_pca_components is None:
+        if config.cnn_reduction_dimensions is None:
+            raise ValueError(
+                "PCA reduction requires cnn_reduction_dimensions or "
+                "cnn_pca_components."
+            )
+        return (config.cnn_reduction_dimensions,) * len(_configured_cnn_layers(config))
     if isinstance(config.cnn_pca_components, int):
         return (config.cnn_pca_components,) * len(_configured_cnn_layers(config))
 
@@ -348,6 +371,18 @@ def _configured_pca_components(config: PatchExtractionConfig) -> tuple[int, ...]
     if len(components) == 1:
         return components * len(_configured_cnn_layers(config))
     return components
+
+
+def _configured_reduction_method(config: PatchExtractionConfig) -> str:
+    """Resolve the explicit reduction setting and legacy aliases."""
+
+    if config.cnn_dimensionality_reduction is not None:
+        return config.cnn_dimensionality_reduction
+    if config.cnn_pca_components is not None:
+        return "pca"
+    if config.cnn_fusion_channels is not None:
+        return "random"
+    return "none"
 
 
 def _apply_channel_pca_to_map(
@@ -1181,8 +1216,8 @@ def _align_and_stack_feature_maps(
                 )
             )
 
-    pca_components = _configured_pca_components(config)
-    if pca_components is not None:
+    reduction_method = _configured_reduction_method(config)
+    if reduction_method == "pca":
         target_channels = resized_maps[0].shape[2]
         if any(feature_map.shape[2] != target_channels for feature_map in resized_maps):
             raise ValueError(
@@ -1192,14 +1227,17 @@ def _align_and_stack_feature_maps(
         return np.stack(resized_maps, axis=-1).astype(np.float32, copy=False)
 
     first_channels = resized_maps[0].shape[2]
-    if config.cnn_fusion_channels is None:
-        target_channels = max(feature_map.shape[2] for feature_map in resized_maps)
+    if reduction_method == "random":
+        target_channels = config.cnn_reduction_dimensions or config.cnn_fusion_channels
+        if target_channels is None:
+            raise ValueError("Random reduction requires cnn_reduction_dimensions.")
     else:
-        target_channels = config.cnn_fusion_channels
-        if first_channels != target_channels:
+        target_channels = first_channels
+        if any(feature_map.shape[2] != target_channels for feature_map in resized_maps):
             raise ValueError(
-                "The first fusion layer defines the retained channel dimension; "
-                f"it has {first_channels} channels but cnn_fusion_channels={target_channels}."
+                "Multiple CNN layers have different channel counts. Set "
+                "cnn_dimensionality_reduction to 'pca' or 'random' and provide "
+                "cnn_reduction_dimensions."
             )
 
     rng = np.random.default_rng(config.cnn_fusion_seed)
@@ -1208,7 +1246,7 @@ def _align_and_stack_feature_maps(
         _configured_cnn_layers(config), resized_maps, strict=True
     ):
         selected = feature_map
-        if config.cnn_fusion_channels is not None and selected.shape[2] != target_channels:
+        if reduction_method == "random" and selected.shape[2] != target_channels:
             if selected.shape[2] < target_channels:
                 raise ValueError(
                     f"Layer {layer_name!r} has only {selected.shape[2]} channels; "
@@ -1218,10 +1256,6 @@ def _align_and_stack_feature_maps(
                 selected.shape[2], size=target_channels, replace=False
             )
             selected = selected[:, :, channel_indices]
-        elif config.cnn_fusion_channels is None and selected.shape[2] < target_channels:
-            padded = np.zeros((target_h, target_w, target_channels), dtype=np.float32)
-            padded[:, :, :selected.shape[2]] = selected
-            selected = padded
         aligned_maps.append(np.asarray(selected, dtype=np.float32, copy=False))
 
     return np.stack(aligned_maps, axis=-1).astype(np.float32, copy=False)
@@ -1259,8 +1293,8 @@ def _align_and_stack_feature_map_batches(
                 )
             )
 
-    pca_components = _configured_pca_components(config)
-    if pca_components is not None:
+    reduction_method = _configured_reduction_method(config)
+    if reduction_method == "pca":
         target_channels = resized_maps[0].shape[3]
         if any(feature_map.shape[3] != target_channels for feature_map in resized_maps):
             raise ValueError(
@@ -1270,14 +1304,17 @@ def _align_and_stack_feature_map_batches(
         return np.stack(resized_maps, axis=-1).astype(np.float32, copy=False)
 
     first_channels = resized_maps[0].shape[3]
-    if config.cnn_fusion_channels is None:
-        target_channels = max(feature_map.shape[3] for feature_map in resized_maps)
+    if reduction_method == "random":
+        target_channels = config.cnn_reduction_dimensions or config.cnn_fusion_channels
+        if target_channels is None:
+            raise ValueError("Random reduction requires cnn_reduction_dimensions.")
     else:
-        target_channels = config.cnn_fusion_channels
-        if first_channels != target_channels:
+        target_channels = first_channels
+        if any(feature_map.shape[3] != target_channels for feature_map in resized_maps):
             raise ValueError(
-                "The first fusion layer defines the retained channel dimension; "
-                f"it has {first_channels} channels but cnn_fusion_channels={target_channels}."
+                "Multiple CNN layers have different channel counts. Set "
+                "cnn_dimensionality_reduction to 'pca' or 'random' and provide "
+                "cnn_reduction_dimensions."
             )
 
     rng = np.random.default_rng(config.cnn_fusion_seed)
@@ -1286,7 +1323,7 @@ def _align_and_stack_feature_map_batches(
         _configured_cnn_layers(config), resized_maps, strict=True
     ):
         selected = feature_map
-        if config.cnn_fusion_channels is not None and selected.shape[3] != target_channels:
+        if reduction_method == "random" and selected.shape[3] != target_channels:
             if selected.shape[3] < target_channels:
                 raise ValueError(
                     f"Layer {layer_name!r} has only {selected.shape[3]} channels; "
@@ -1296,13 +1333,6 @@ def _align_and_stack_feature_map_batches(
                 selected.shape[3], size=target_channels, replace=False
             )
             selected = selected[:, :, :, channel_indices]
-        elif config.cnn_fusion_channels is None and selected.shape[3] < target_channels:
-            padded = np.zeros(
-                (batch_size, target_h, target_w, target_channels),
-                dtype=np.float32,
-            )
-            padded[:, :, :, :selected.shape[3]] = selected
-            selected = padded
         aligned_maps.append(np.asarray(selected, dtype=np.float32, copy=False))
 
     return np.stack(aligned_maps, axis=-1).astype(np.float32, copy=False)
