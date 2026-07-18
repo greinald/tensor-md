@@ -2,7 +2,11 @@
 
 __version__ = "0.1.1"
 
-from .Data_Loading import PatchExtractionConfig, load_patch_datasets
+from .Data_Loading import (
+    PatchExtractionConfig,
+    extract_cnn_feature_maps,
+    load_patch_datasets,
+)
 from .location_aware_tensor_mahalanobis_detector import (
     LocationAwareTensorMahalanobisDetector,
     NeighborhoodScoreLocationAwareTensorMahalanobisDetector,
@@ -12,6 +16,7 @@ from .patch_estimators import TensorGaussianState
 __all__ = [
     "__version__",
     "PatchExtractionConfig",
+    "extract_cnn_feature_maps",
     "load_patch_datasets",
     "LocationAwareTensorMahalanobisDetector",
     "NeighborhoodScoreLocationAwareTensorMahalanobisDetector",

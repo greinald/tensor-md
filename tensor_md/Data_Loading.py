@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 import time
+from typing import Any, Callable
 
 import numpy as np
 from PIL import Image
@@ -40,6 +41,10 @@ class PatchExtractionConfig:
     yolo_obb_padding: int = 10
     input_representation: str = "raw_pixels"
     cnn_backbone: str = "ResNet50"
+    # Optional user-owned extractor. It receives a float32 NHWC batch in [0, 1]
+    # and returns one NHWC feature-map batch or a list/tuple of such batches.
+    # When supplied, no framework-specific backbone is constructed.
+    cnn_feature_extractor: Callable[[np.ndarray], Any] | Any | None = None
     cnn_layer_name: str = "conv3_block4_out"
     cnn_layer_names: tuple[str, ...] | None = None
     cnn_pca_components: int | tuple[int, ...] | None = None
@@ -400,7 +405,11 @@ def pad_to_square_black(
 def resolve_data_root(config: PatchExtractionConfig) -> Path:
     """Return the configured data root or discover it automatically."""
 
-    return config.data_root.resolve() if config.data_root is not None else find_data_root()
+    return (
+        Path(config.data_root).expanduser().resolve()
+        if config.data_root is not None
+        else find_data_root()
+    )
 
 
 def resolve_category_root(config: PatchExtractionConfig) -> Path:
@@ -996,6 +1005,14 @@ def _extract_raw_cnn_feature_maps(
 ) -> np.ndarray | list[np.ndarray]:
     """Extract raw CNN feature maps before any fusion or PCA post-processing."""
 
+    if config.cnn_feature_extractor is not None:
+        raw = _call_custom_feature_extractor(
+            np.expand_dims(np.asarray(image, dtype=np.float32), axis=0), config
+        )
+        if isinstance(raw, list):
+            return [layer[0] for layer in raw]
+        return raw[0]
+
     if config.cnn_backbone == "YOLO11":
         extractor = _build_yolo_feature_extractor(config)
         return extractor.extract(image)
@@ -1026,6 +1043,9 @@ def _extract_raw_cnn_feature_maps_batch(
             "images must have shape (batch, height, width, 3), "
             f"got {images.shape}."
         )
+
+    if config.cnn_feature_extractor is not None:
+        return _call_custom_feature_extractor(images, config)
 
     # TensorFlow ResNet accepts a true image batch. Other extractors currently
     # expose a single-image API, so retain their behavior while still returning
@@ -1433,6 +1453,60 @@ def _patch_positions(
         for row in range(0, image_h - patch_h + 1, stride)
         for col in range(0, image_w - patch_w + 1, stride)
     ]
+
+
+def _to_numpy_feature_batch(value: Any, *, name: str) -> np.ndarray:
+    """Convert common framework tensor outputs to a float32 NHWC batch."""
+
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    array = np.asarray(value, dtype=np.float32)
+    if array.ndim != 4:
+        raise ValueError(
+            f"Custom CNN extractor output {name!r} must have shape "
+            f"(batch, height, width, channels), got {array.shape}."
+        )
+    return array
+
+
+def _call_custom_feature_extractor(
+    images: np.ndarray,
+    config: PatchExtractionConfig,
+) -> np.ndarray | list[np.ndarray]:
+    """Run and validate a user-provided CNN/feature extractor.
+
+    The callable may return a NumPy array, a framework tensor, or a list/tuple
+    of those. Each output must be batched NHWC. A model exposing only
+    ``predict`` is accepted as well, which covers common Keras-style models.
+    """
+
+    extractor = config.cnn_feature_extractor
+    if extractor is None:  # pragma: no cover - guarded by callers
+        raise RuntimeError("No custom CNN feature extractor was configured.")
+    if callable(extractor):
+        output = extractor(images)
+    elif hasattr(extractor, "predict"):
+        output = extractor.predict(images, verbose=0)
+    else:
+        raise TypeError(
+            "cnn_feature_extractor must be callable or expose predict(batch, verbose=0)."
+        )
+    outputs = output if isinstance(output, (list, tuple)) else [output]
+    feature_maps = [
+        _to_numpy_feature_batch(value, name=f"layer_{index}")
+        for index, value in enumerate(outputs)
+    ]
+    for feature_map in feature_maps:
+        if feature_map.shape[0] != images.shape[0]:
+            raise ValueError(
+                "Custom CNN extractor returned a different batch size: "
+                f"expected {images.shape[0]}, got {feature_map.shape[0]}."
+            )
+    return feature_maps if isinstance(output, (list, tuple)) else feature_maps[0]
 
 
 def feature_patch_layout_for_shape(

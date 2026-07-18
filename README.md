@@ -25,6 +25,7 @@ from tensor_md import (
     LocationAwareTensorMahalanobisDetector,
     NeighborhoodScoreLocationAwareTensorMahalanobisDetector,
     PatchExtractionConfig,
+    extract_cnn_feature_maps,
     load_patch_datasets,
 )
 ```
@@ -33,6 +34,30 @@ The detector is fitted using normal patches only. It stores a location-specific
 mean and separable covariance model and produces a scalar score for each test
 patch. The neighbourhood subclass optionally pools the already-computed scores
 on the spatial grid.
+
+The image loader is not tied to one CNN. Pass any callable (or model exposing
+`predict`) through `cnn_feature_extractor`; it receives a float32 image batch
+with shape `(batch, height, width, 3)` and values in `[0, 1]`, and returns one
+feature-map batch or a list of feature-map batches in `(batch, height, width,
+channels)` format. PCA, spatial alignment, fusion, and tensor scoring then use
+those maps exactly as they do for the built-in adapters. PyTorch models can be
+wrapped with a small adapter that converts their NCHW output to NHWC.
+
+```python
+def my_cnn(batch):
+    with torch.no_grad():
+        return torch_model(to_nchw(batch)).permute(0, 2, 3, 1)
+
+config = PatchExtractionConfig(
+    category="bottle",
+    data_root="/path/to/mvtec",
+    input_representation="cnn_features",
+    cnn_feature_extractor=my_cnn,
+)
+```
+
+ResNet50, WideResNet, and YOLO adapters remain available as conveniences; they
+are not requirements of the tensor detector.
 
 Fitted detectors can be saved and restored, including all fitted means,
 covariance factors, shrinkage state, and score-calibration statistics:

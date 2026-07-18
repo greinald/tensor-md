@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from tensor_md import (
+    extract_cnn_feature_maps,
     LocationAwareTensorMahalanobisDetector,
     NeighborhoodScoreLocationAwareTensorMahalanobisDetector,
     PatchExtractionConfig,
@@ -77,3 +78,21 @@ def test_mvtec_data_root_environment_override_rejects_missing_path(monkeypatch, 
     monkeypatch.setenv("MVTEC_DATA_ROOT", str(missing))
     with pytest.raises(FileNotFoundError, match="MVTEC_DATA_ROOT"):
         resolve_data_root(PatchExtractionConfig(category="dummy"))
+
+
+def test_custom_cnn_extractor_is_used_without_framework_specific_backbone():
+    images = np.random.default_rng(4).random((3, 8, 8, 3), dtype=np.float32)
+
+    def extractor(batch):
+        # A stand-in for any CNN; real models may return one map or a list.
+        return batch[:, ::2, ::2, :1]
+
+    config = PatchExtractionConfig(
+        category="dummy",
+        input_representation="cnn_features",
+        cnn_backbone="my_custom_model",
+        cnn_feature_extractor=extractor,
+    )
+    maps = extract_cnn_feature_maps(images, config)
+    assert maps.shape == (3, 4, 4, 1)
+    np.testing.assert_allclose(maps, images[:, ::2, ::2, :1])
