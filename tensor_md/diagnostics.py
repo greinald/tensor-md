@@ -37,7 +37,7 @@ def save_score_diagnostics(
         requested = {str(item).lower() for item in formats}
         if "plots" in requested:
             requested.update({"distribution", "heatmaps"})
-    allowed = {"npy", "csv", "json", "distribution", "heatmaps", "plots"}
+    allowed = {"npy", "csv", "json", "tiff", "distribution", "heatmaps", "plots"}
     unknown = requested - allowed
     if unknown:
         raise ValueError(f"Unsupported diagnostic formats: {sorted(unknown)}")
@@ -100,6 +100,26 @@ def save_score_diagnostics(
         result["scores"] = str(raw_path)
     if "csv" in requested:
         result["csv"] = str(csv_path)
+
+    if "tiff" in requested:
+        if grid_shape is None:
+            raise ValueError("The 'tiff' format requires grid_shape=(height, width).")
+        try:
+            import tifffile
+        except ImportError:
+            tifffile = None
+        from PIL import Image
+        tiff_dir = destination / f"{prefix}_tiff"
+        tiff_dir.mkdir(parents=True, exist_ok=True)
+        for image_index, row in enumerate(image_scores):
+            score_grid = row.reshape(grid_shape).astype(np.float32, copy=False)
+            target = tiff_dir / f"{image_index:06d}.tiff"
+            if tifffile is not None:
+                tifffile.imwrite(target, score_grid)
+            else:
+                # Pillow can write float32 TIFFs and is part of the core package.
+                Image.fromarray(score_grid, mode="F").save(target, format="TIFF")
+        result["tiff_directory"] = str(tiff_dir)
 
     if "distribution" in requested or "heatmaps" in requested:
         try:

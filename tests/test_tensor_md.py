@@ -189,6 +189,21 @@ def test_score_diagnostics_formats_are_selectable(tmp_path):
     assert not (tmp_path / "scores.csv").exists()
 
 
+def test_score_diagnostics_can_write_tiff_score_grids(tmp_path):
+    from PIL import Image
+
+    result = save_score_diagnostics(
+        np.arange(8, dtype=np.float32),
+        tmp_path,
+        patches_per_image=4,
+        grid_shape=(2, 2),
+        formats=("tiff",),
+    )
+    tiff_path = tmp_path / "scores_tiff" / "000000.tiff"
+    assert result["tiff_directory"] == str(tmp_path / "scores_tiff")
+    assert np.asarray(Image.open(tiff_path)).shape == (2, 2)
+
+
 def test_detector_accepts_patch_dataset_objects():
     from types import SimpleNamespace
 

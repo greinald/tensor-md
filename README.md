@@ -111,8 +111,10 @@ detector.save_score_diagnostics(
 )
 ```
 
-Available formats are `npy`, `csv`, `json`, `distribution`, and `heatmaps`.
-These files are for inspection only and do not replace the official evaluator.
+Available formats are `npy`, `csv`, `json`, `tiff`, `distribution`, and
+`heatmaps`. The `tiff` option writes one floating-point score grid per image;
+`heatmaps` writes a visual PNG montage. These files are for inspection only and
+do not replace the official evaluator.
 
 For convenience, Keras and PyTorch models can be adapted without writing a
 layout-conversion wrapper:
