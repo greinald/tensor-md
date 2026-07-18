@@ -211,6 +211,10 @@ datasets = load_patch_datasets(config)
 
 The package does not download or bundle MVTec AD.
 
+## Release Notices
+
+git pull --ff-only
+python scripts/release.py
 
 ## License
 
