@@ -56,6 +56,31 @@ def test_detector_fit_score_and_save_load_round_trip(tmp_path):
     assert restored.location_means.shape == detector.location_means.shape
 
 
+def test_local_average_covariance_target_fits_and_scores():
+    patches = _small_patch_dataset()
+    detector = LocationAwareTensorMahalanobisDetector(
+        patches_per_image=4,
+        iterations=2,
+        covariance_shrinkage=0.5,
+        covariance_shrinkage_target="local_average",
+        location_fit_workers=1,
+    ).fit(patches)
+    scores = detector.score(patches)
+    assert np.isfinite(scores).all()
+    assert detector.fit_timing["covariance_shrinkage_target"] == "local_average"
+
+
+def test_local_average_target_requires_intermediate_shrinkage():
+    patches = _small_patch_dataset()
+    detector = LocationAwareTensorMahalanobisDetector(
+        patches_per_image=4,
+        covariance_shrinkage=1.0,
+        covariance_shrinkage_target="local_average",
+    )
+    with pytest.raises(ValueError, match="intermediate covariance shrinkage"):
+        detector.fit(patches)
+
+
 def test_neighborhood_detector_round_trip(tmp_path):
     patches = _small_patch_dataset()
     detector = NeighborhoodScoreLocationAwareTensorMahalanobisDetector(

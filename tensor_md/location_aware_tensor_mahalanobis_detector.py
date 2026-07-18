@@ -250,6 +250,7 @@ class LocationAwareTensorMahalanobisDetector:
         convergence_tol: float = 1e-4,
         mean_shrinkage: float = 0.0,
         covariance_shrinkage: float = 0.0,
+        covariance_shrinkage_target: str = "pooled",
         score_normalization: str = "none",
         score_normalization_eps: float = 1e-8,
         verbose: bool = False,
@@ -261,12 +262,13 @@ class LocationAwareTensorMahalanobisDetector:
         self.convergence_tol = convergence_tol
         self.mean_shrinkage = mean_shrinkage
         self.covariance_shrinkage = covariance_shrinkage
+        self.covariance_shrinkage_target = covariance_shrinkage_target
         self.score_normalization = score_normalization
         self.score_normalization_eps = score_normalization_eps
         self.verbose = verbose
         self.shared_score_location_batch_size = shared_score_location_batch_size
         self.location_fit_workers = (
-            min(2, os.cpu_count() or 1)
+            os.cpu_count() or 1
             if location_fit_workers is None
             else location_fit_workers
         )
@@ -331,6 +333,42 @@ class LocationAwareTensorMahalanobisDetector:
                 "covariance_shrinkage must lie in [0, 1], "
                 f"got {self.covariance_shrinkage}."
             )
+        if self.covariance_shrinkage_target not in {"pooled", "local_average"}:
+            raise ValueError(
+                "covariance_shrinkage_target must be 'pooled' or 'local_average', "
+                f"got {self.covariance_shrinkage_target!r}."
+            )
+        if (
+            self.covariance_shrinkage_target == "local_average"
+            and not 0.0 < self.covariance_shrinkage < 1.0
+        ):
+            raise ValueError(
+                "covariance_shrinkage_target='local_average' is only valid for "
+                "intermediate covariance shrinkage in (0, 1)."
+            )
+
+    def _uses_local_average_covariance_target(self) -> bool:
+        return self.covariance_shrinkage_target == "local_average"
+
+    def _apply_local_average_shrinkage(
+        self,
+        local_states: list[TensorGaussianState],
+        sample_shape: tuple[int, ...],
+    ) -> tuple[list[TensorGaussianState], TensorGaussianState, float]:
+        """Shrink local factors toward their normalized across-location average."""
+
+        start = time.perf_counter()
+        target = self._summarize_location_covariance_states(local_states, sample_shape)
+        states = [
+            _blend_tensor_separable_covariances(
+                base_state=state,
+                bleed_state=target,
+                shrinkage=self.covariance_shrinkage,
+                eps=self.eps,
+            )
+            for state in local_states
+        ]
+        return states, target, time.perf_counter() - start
 
     def _validate_score_normalization(self) -> None:
         if self.score_normalization not in {"none", "zscore"}:
@@ -554,13 +592,14 @@ class LocationAwareTensorMahalanobisDetector:
         self,
         residuals_by_image: np.ndarray,
         sample_shape: tuple[int, ...],
+        apply_global_shrinkage: bool = True,
     ) -> tuple[list[TensorGaussianState], float, float]:
         zero_residual_mean = np.zeros(sample_shape, dtype=np.float32)
         covariance_seconds = 0.0
         shrinkage_seconds = 0.0
         states: list[TensorGaussianState] = []
 
-        if self.covariance_shrinkage == 1.0:
+        if apply_global_shrinkage and self.covariance_shrinkage == 1.0:
             if self.global_covariance_state is None:
                 raise RuntimeError("Global covariance state is missing for shrinkage.")
             for _ in range(self.patches_per_image):
@@ -584,7 +623,7 @@ class LocationAwareTensorMahalanobisDetector:
             )
             location_shrinkage_seconds = 0.0
 
-            if self.covariance_shrinkage > 0.0:
+            if apply_global_shrinkage and self.covariance_shrinkage > 0.0:
                 if self.global_covariance_state is None:
                     raise RuntimeError("Global covariance state is missing for shrinkage.")
                 shrinkage_start = time.perf_counter()
@@ -664,13 +703,14 @@ class LocationAwareTensorMahalanobisDetector:
         sample_shape: tuple[int, ...],
         image_count: int,
         batch_count: int,
+        apply_global_shrinkage: bool = True,
     ) -> tuple[list[TensorGaussianState], float, float]:
         zero_residual_mean = np.zeros(sample_shape, dtype=np.float32)
         covariance_seconds = 0.0
         shrinkage_seconds = 0.0
         states: list[TensorGaussianState] = []
 
-        if self.covariance_shrinkage == 1.0:
+        if apply_global_shrinkage and self.covariance_shrinkage == 1.0:
             if self.global_covariance_state is None:
                 raise RuntimeError("Global covariance state is missing for shrinkage.")
             for _ in range(self.patches_per_image):
@@ -709,7 +749,7 @@ class LocationAwareTensorMahalanobisDetector:
             )
             covariance_seconds += time.perf_counter() - covariance_start
 
-            if self.covariance_shrinkage > 0.0:
+            if apply_global_shrinkage and self.covariance_shrinkage > 0.0:
                 if self.global_covariance_state is None:
                     raise RuntimeError("Global covariance state is missing for shrinkage.")
                 shrinkage_start = time.perf_counter()
@@ -892,22 +932,37 @@ class LocationAwareTensorMahalanobisDetector:
         mean_seconds = time.perf_counter() - mean_start
         total_observations = image_count * self.patches_per_image
 
-        self.global_covariance_state, global_covariance_seconds = (
-            self._fit_global_covariance_from_batches(
-                patch_batch_factory=patch_batch_factory,
-                sample_shape=sample_shape,
-                observations_count=total_observations,
-                batch_count=batch_count,
+        use_local_average_target = self._uses_local_average_covariance_target()
+        if use_local_average_target:
+            self.global_covariance_state, global_covariance_seconds = None, 0.0
+        else:
+            self.global_covariance_state, global_covariance_seconds = (
+                self._fit_global_covariance_from_batches(
+                    patch_batch_factory=patch_batch_factory,
+                    sample_shape=sample_shape,
+                    observations_count=total_observations,
+                    batch_count=batch_count,
+                )
             )
-        )
         self.location_covariance_states, covariance_seconds, shrinkage_seconds = (
             self._fit_location_covariance_states_from_batches(
                 patch_batch_factory=patch_batch_factory,
                 sample_shape=sample_shape,
                 image_count=image_count,
                 batch_count=batch_count,
+                apply_global_shrinkage=not use_local_average_target,
             )
         )
+        if use_local_average_target:
+            (
+                self.location_covariance_states,
+                self.global_covariance_state,
+                local_average_seconds,
+            ) = self._apply_local_average_shrinkage(
+                self.location_covariance_states,
+                sample_shape,
+            )
+            shrinkage_seconds += local_average_seconds
         self.location_aware_covariance_state = self._summarize_location_covariance_states(
             self.location_covariance_states,
             sample_shape=sample_shape,
@@ -929,6 +984,7 @@ class LocationAwareTensorMahalanobisDetector:
             "covariance_shrinkage_seconds": shrinkage_seconds,
             "mean_shrinkage": self.mean_shrinkage,
             "covariance_shrinkage": self.covariance_shrinkage,
+            "covariance_shrinkage_target": self.covariance_shrinkage_target,
             "score_normalization": self.score_normalization,
             "location_fit_workers": self.location_fit_workers,
             "location_aware_converged": all(
@@ -988,18 +1044,33 @@ class LocationAwareTensorMahalanobisDetector:
         residual_seconds = time.perf_counter() - residual_start
         sample_shape = tuple(patches.shape[1:])
 
-        self.global_covariance_state, global_covariance_seconds = (
-            self._fit_global_covariance_from_array(
-                residuals_by_image=residuals_by_image,
-                sample_shape=sample_shape,
+        use_local_average_target = self._uses_local_average_covariance_target()
+        if use_local_average_target:
+            self.global_covariance_state, global_covariance_seconds = None, 0.0
+        else:
+            self.global_covariance_state, global_covariance_seconds = (
+                self._fit_global_covariance_from_array(
+                    residuals_by_image=residuals_by_image,
+                    sample_shape=sample_shape,
+                )
             )
-        )
         self.location_covariance_states, covariance_seconds, shrinkage_seconds = (
             self._fit_location_covariance_states_from_array(
                 residuals_by_image=residuals_by_image,
                 sample_shape=sample_shape,
+                apply_global_shrinkage=not use_local_average_target,
             )
         )
+        if use_local_average_target:
+            (
+                self.location_covariance_states,
+                self.global_covariance_state,
+                local_average_seconds,
+            ) = self._apply_local_average_shrinkage(
+                self.location_covariance_states,
+                sample_shape,
+            )
+            shrinkage_seconds += local_average_seconds
         self.location_aware_covariance_state = self._summarize_location_covariance_states(
             self.location_covariance_states,
             sample_shape=sample_shape,
@@ -1020,6 +1091,7 @@ class LocationAwareTensorMahalanobisDetector:
             "covariance_shrinkage_seconds": shrinkage_seconds,
             "mean_shrinkage": self.mean_shrinkage,
             "covariance_shrinkage": self.covariance_shrinkage,
+            "covariance_shrinkage_target": self.covariance_shrinkage_target,
             "score_normalization": self.score_normalization,
             "location_fit_workers": self.location_fit_workers,
             "location_aware_converged": all(
@@ -1116,21 +1188,40 @@ class LocationAwareTensorMahalanobisDetector:
                 )
                 score_norm_seconds += float(state_score_timing.get("norm_seconds", 0.0))
         else:
-            for location_index, state in enumerate(self.location_covariance_states):
+            def score_location(
+                item: tuple[int, TensorGaussianState],
+            ) -> tuple[int, np.ndarray, dict[str, float]]:
+                location_index, state = item
                 location_scores = _score_tensor_separable_model(
                     state,
                     residuals_by_image[:, location_index, ...],
                 )
-                scores_by_image[:, location_index] = location_scores.astype(
-                    np.float32,
-                    copy=False,
-                )
-                state_score_timing = state.get("score_timing", {})
-                score_center_seconds += float(state_score_timing.get("center_seconds", 0.0))
-                score_whitening_seconds += float(
-                    state_score_timing.get("whitening_seconds", 0.0)
-                )
-                score_norm_seconds += float(state_score_timing.get("norm_seconds", 0.0))
+                return location_index, location_scores, state.get("score_timing", {})
+
+            worker_count = min(self.location_fit_workers, self.patches_per_image)
+            items = enumerate(self.location_covariance_states)
+            if worker_count == 1:
+                scored_locations = map(score_location, items)
+            else:
+                executor = ThreadPoolExecutor(max_workers=worker_count)
+                scored_locations = executor.map(score_location, items)
+
+            try:
+                for location_index, location_scores, state_score_timing in scored_locations:
+                    scores_by_image[:, location_index] = location_scores.astype(
+                        np.float32,
+                        copy=False,
+                    )
+                    score_center_seconds += float(
+                        state_score_timing.get("center_seconds", 0.0)
+                    )
+                    score_whitening_seconds += float(
+                        state_score_timing.get("whitening_seconds", 0.0)
+                    )
+                    score_norm_seconds += float(state_score_timing.get("norm_seconds", 0.0))
+            finally:
+                if worker_count != 1:
+                    executor.shutdown(wait=True)
 
         covariance_seconds = time.perf_counter() - covariance_start
         self.score_timing = {
