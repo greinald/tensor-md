@@ -17,6 +17,9 @@ Install the core package from PyPI:
 python -m pip install tensor-md
 ```
 
+The PyPI distribution is named `tensor-md`; import it in Python as
+`tensor_md`, because Python module names cannot contain hyphens.
+
 Install the optional CNN dependencies when using the built-in feature
 extractors:
 

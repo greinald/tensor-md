@@ -118,7 +118,7 @@ def save_score_diagnostics(
                 tifffile.imwrite(target, score_grid)
             else:
                 # Pillow can write float32 TIFFs and is part of the core package.
-                Image.fromarray(score_grid, mode="F").save(target, format="TIFF")
+                Image.fromarray(score_grid).save(target, format="TIFF")
         result["tiff_directory"] = str(tiff_dir)
 
     if "distribution" in requested or "heatmaps" in requested:
