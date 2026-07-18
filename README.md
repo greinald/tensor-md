@@ -111,6 +111,20 @@ detector.save_score_diagnostics(
 )
 ```
 
+To fit and save both distributions in one call:
+
+```python
+detector.fit_and_save_diagnostics(
+    normal,
+    images_to_check,
+    "outputs/debug",
+    grid_shape=(8, 8),
+)
+```
+
+This creates separate `train/` and `test/` outputs, including score arrays,
+histograms, heatmap previews, and TIFF score grids.
+
 Available formats are `npy`, `csv`, `json`, `tiff`, `distribution`, and
 `heatmaps`. The `tiff` option writes one floating-point score grid per image;
 `heatmaps` writes a visual PNG montage. These files are for inspection only and

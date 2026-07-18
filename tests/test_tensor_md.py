@@ -216,3 +216,31 @@ def test_detector_accepts_patch_dataset_objects():
     ).fit(dataset)
     scores = detector.score(dataset)
     assert scores.shape == (len(patches),)
+
+
+def test_fit_and_save_diagnostics_handles_train_and_test_together(tmp_path):
+    from types import SimpleNamespace
+
+    patches = _small_patch_dataset()
+    train = SimpleNamespace(
+        patches=patches,
+        image_paths=["train-0", "train-1", "train-2"],
+    )
+    test = SimpleNamespace(
+        patches=patches,
+        image_paths=["test-0", "test-1", "test-2"],
+    )
+    detector = LocationAwareTensorMahalanobisDetector(
+        patches_per_image=4,
+        iterations=2,
+        location_fit_workers=1,
+    )
+    result = detector.fit_and_save_diagnostics(
+        train,
+        test,
+        tmp_path,
+        formats=("npy", "json"),
+    )
+    assert set(result) == {"train", "test"}
+    assert (tmp_path / "train" / "scores.npy").exists()
+    assert (tmp_path / "test" / "scores.json").exists()

@@ -427,6 +427,43 @@ class LocationAwareTensorMahalanobisDetector:
             **kwargs,
         )
 
+    def fit_and_save_diagnostics(
+        self,
+        train_data,
+        test_data,
+        output_dir,
+        *,
+        grid_shape=None,
+        formats=("npy", "json", "distribution", "heatmaps", "tiff"),
+    ):
+        """Fit once, score both splits, and save separate diagnostics."""
+
+        self.fit(train_data)
+        train_scores = self.score(train_data)
+        test_scores = self.score(test_data)
+
+        def image_paths(data):
+            return getattr(data, "image_paths", None)
+
+        from pathlib import Path
+        root = Path(output_dir).expanduser()
+        return {
+            "train": self.save_score_diagnostics(
+                train_scores,
+                root / "train",
+                grid_shape=grid_shape,
+                image_paths=image_paths(train_data),
+                formats=formats,
+            ),
+            "test": self.save_score_diagnostics(
+                test_scores,
+                root / "test",
+                grid_shape=grid_shape,
+                image_paths=image_paths(test_data),
+                formats=formats,
+            ),
+        }
+
     def _log_batch_progress(
         self,
         phase: str,
