@@ -38,6 +38,9 @@ mean and separable covariance model and produces a scalar score for each test
 patch. The neighbourhood subclass optionally pools the already-computed scores
 on the spatial grid.
 
+See `examples/general_pipeline_diagnostics.ipynb` for a complete directory-only
+walkthrough that fits the detector and writes train/test diagnostics.
+
 The image loader is not tied to one CNN. Pass any callable (or model exposing
 `predict`) through `cnn_feature_extractor`; it receives a float32 image batch
 with shape `(batch, height, width, 3)` and values in `[0, 1]`, and returns one
