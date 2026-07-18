@@ -27,6 +27,7 @@ from tensor_md import (
     PatchExtractionConfig,
     extract_cnn_feature_maps,
     load_patch_datasets,
+    make_cnn_feature_extractor,
 )
 ```
 
@@ -58,6 +59,18 @@ config = PatchExtractionConfig(
 
 ResNet50, WideResNet, and YOLO adapters remain available as conveniences; they
 are not requirements of the tensor detector.
+
+For convenience, Keras and PyTorch models can be adapted without writing a
+layout-conversion wrapper:
+
+```python
+extractor = make_cnn_feature_extractor(model, framework="pytorch")
+config = PatchExtractionConfig(
+    category="bottle",
+    input_representation="cnn_features",
+    cnn_feature_extractor=extractor,
+)
+```
 
 Fitted detectors can be saved and restored, including all fitted means,
 covariance factors, shrinkage state, and score-calibration statistics:

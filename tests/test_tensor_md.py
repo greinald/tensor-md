@@ -6,6 +6,7 @@ from tensor_md import (
     LocationAwareTensorMahalanobisDetector,
     NeighborhoodScoreLocationAwareTensorMahalanobisDetector,
     PatchExtractionConfig,
+    make_cnn_feature_extractor,
 )
 from tensor_md.Data_Loading import resolve_data_root
 from tensor_md.patch_estimators import (
@@ -96,3 +97,15 @@ def test_custom_cnn_extractor_is_used_without_framework_specific_backbone():
     maps = extract_cnn_feature_maps(images, config)
     assert maps.shape == (3, 4, 4, 1)
     np.testing.assert_allclose(maps, images[:, ::2, ::2, :1])
+
+
+def test_keras_convenience_adapter_accepts_direct_model():
+    class FakeKerasModel:
+        def __call__(self, batch, training=False):
+            assert training is False
+            return batch[:, ::2, ::2, :1]
+
+    images = np.random.default_rng(7).random((2, 8, 8, 3), dtype=np.float32)
+    extractor = make_cnn_feature_extractor(FakeKerasModel(), framework="keras")
+    maps = extractor(images)
+    assert maps.shape == (2, 4, 4, 1)

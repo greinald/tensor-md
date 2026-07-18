@@ -1509,6 +1509,63 @@ def _call_custom_feature_extractor(
     return feature_maps if isinstance(output, (list, tuple)) else feature_maps[0]
 
 
+def make_cnn_feature_extractor(
+    model: Any,
+    *,
+    framework: str = "auto",
+    device: str | None = None,
+) -> Callable[[np.ndarray], Any]:
+    """Adapt a Keras or PyTorch model for ``cnn_feature_extractor``.
+
+    The returned callable accepts an NHWC float32 batch in ``[0, 1]``. Keras
+    models are called directly. PyTorch models receive NCHW tensors and their
+    four-dimensional outputs are converted back to NHWC; a list/tuple of
+    outputs is supported for multi-level fusion. The model must already expose
+    the feature map(s) the user wants to use.
+    """
+
+    if framework not in {"auto", "keras", "tensorflow", "torch", "pytorch"}:
+        raise ValueError(
+            "framework must be 'auto', 'keras', 'tensorflow', 'torch', or 'pytorch'."
+        )
+    module_name = type(model).__module__.lower()
+    if framework == "auto":
+        framework = "torch" if "torch" in module_name or hasattr(model, "parameters") else "keras"
+
+    if framework in {"keras", "tensorflow"}:
+        def keras_extractor(images: np.ndarray):
+            return model(images, training=False) if callable(model) else model.predict(images, verbose=0)
+
+        return keras_extractor
+
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - depends on optional extra
+        raise ModuleNotFoundError(
+            "PyTorch is required for framework='torch'; install tensor-md[cnn]."
+        ) from exc
+
+    target_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model.to(target_device).eval()
+
+    def torch_extractor(images: np.ndarray):
+        tensor = torch.from_numpy(np.asarray(images, dtype=np.float32)).permute(0, 3, 1, 2)
+        with torch.no_grad():
+            output = model(tensor.to(target_device))
+        outputs = output if isinstance(output, (list, tuple)) else [output]
+        converted = []
+        for feature_map in outputs:
+            if feature_map.ndim != 4:
+                raise ValueError(
+                    "PyTorch CNN outputs must be four-dimensional NCHW tensors; "
+                    f"got {tuple(feature_map.shape)}."
+                )
+            converted.append(feature_map.detach().cpu().permute(0, 2, 3, 1).numpy())
+        return converted if isinstance(output, (list, tuple)) else converted[0]
+
+    return torch_extractor
+
+
 def feature_patch_layout_for_shape(
     feature_map_shape: tuple[int, ...],
     patch_size: tuple[int, int] = (1, 1),
