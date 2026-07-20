@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,8 +90,30 @@ def main() -> None:
         action="store_true",
         help="Create the validated commit and tag locally without pushing them.",
     )
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help=(
+            "Test and build the current working tree into dist/ without requiring "
+            "a clean checkout, changing versions, committing, tagging, or pushing."
+        ),
+    )
     args = parser.parse_args()
     bump_kind = args.bump or "patch"
+
+    if args.build_only:
+        ensure_release_tools()
+        run(sys.executable, "-m", "pytest", "-q")
+        dist_dir = ROOT / "dist"
+        if dist_dir.exists():
+            shutil.rmtree(dist_dir)
+        run(sys.executable, "-m", "build", "--outdir", str(dist_dir))
+        distributions = sorted(str(path) for path in dist_dir.iterdir())
+        if not distributions:
+            raise RuntimeError("The build produced no distribution files.")
+        run(sys.executable, "-m", "twine", "check", *distributions)
+        print(f"Built and verified tensor-md {project_version()} in {dist_dir}.")
+        return
 
     require_clean_checkout()
     current = project_version()

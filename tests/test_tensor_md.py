@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from PIL import Image
+from types import SimpleNamespace
 
 from tensor_md import (
     extract_cnn_feature_maps,
@@ -12,6 +13,7 @@ from tensor_md import (
     load_patch_datasets,
     load_normal_patches,
     load_image_patches,
+    light_background_orientation_context,
 )
 from tensor_md.Data_Loading import (
     _align_and_stack_feature_map_batches,
@@ -79,6 +81,52 @@ def test_local_average_target_requires_intermediate_shrinkage():
     )
     with pytest.raises(ValueError, match="intermediate covariance shrinkage"):
         detector.fit(patches)
+
+
+def test_fourier_conditioned_mean_requires_and_uses_image_context():
+    rng = np.random.default_rng(31)
+    image_count = 24
+    angles = np.linspace(-np.pi, np.pi, image_count, endpoint=False)
+    patches = np.empty((image_count, 1, 1, 2), dtype=np.float32)
+    patches[:, 0, 0, 0] = 4.0 * np.cos(angles)
+    patches[:, 0, 0, 1] = 3.0 * np.sin(angles)
+    patches += rng.normal(0.0, 0.03, size=patches.shape).astype(np.float32)
+
+    detector = LocationAwareTensorMahalanobisDetector(
+        patches_per_image=1,
+        iterations=2,
+        conditioning="fourier_mean",
+        conditioning_order=2,
+        conditioning_ridge=1e-3,
+        location_fit_workers=1,
+    )
+    with pytest.raises(ValueError, match="requires context"):
+        detector.fit(patches)
+
+    dataset = SimpleNamespace(patches=patches, image_context=angles)
+    detector.fit_dataset(dataset)
+    scores = detector.score_dataset(dataset)
+    assert scores.shape == (image_count,)
+    assert np.isfinite(scores).all()
+    assert detector.conditioning_mean_coefficients is not None
+    assert detector.fit_timing["conditioning"] == "fourier_mean"
+
+
+def test_light_background_orientation_context_tracks_rotation(tmp_path):
+    horizontal = np.full((80, 80, 3), 245, dtype=np.uint8)
+    horizontal[32:48, 14:66] = 35
+    horizontal[26:54, 10:24] = 35
+    first = tmp_path / "horizontal.png"
+    second = tmp_path / "vertical.png"
+    Image.fromarray(horizontal).save(first)
+    Image.fromarray(np.rot90(horizontal)).save(second)
+
+    first_angle = light_background_orientation_context(first)
+    second_angle = light_background_orientation_context(second)
+    # np.rot90 is counter-clockwise in array coordinates, whose row axis points
+    # downward; the returned Cartesian-style image angle therefore changes by -pi/2.
+    error = np.angle(np.exp(1j * (second_angle - first_angle + np.pi / 2)))
+    assert abs(error) < 0.15
 
 
 def test_neighborhood_detector_round_trip(tmp_path):

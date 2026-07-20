@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 from sklearn.decomposition import IncrementalPCA
 
@@ -35,6 +36,10 @@ class PatchExtractionConfig:
     object_crop_mode: str = "none"
     white_background_threshold: int = 245
     dark_background_threshold: int = 40
+    # Optional scalar context extracted once per image (for example, a directed
+    # orientation angle in radians used by a conditional-mean detector).
+    image_context_mode: str = "none"
+    image_context_extractor: Callable[[Path], float] | None = None
     object_crop_padding: int = 4
     center_cropped_object: bool = False
     yolo_obb_preprocessing: bool = False
@@ -81,6 +86,7 @@ class PatchDataset:
     patches_per_image: int
     patch_image_indices: np.ndarray
     patch_local_indices: np.ndarray
+    image_context: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,20 @@ def validate_config(config: PatchExtractionConfig) -> None:
             "object_crop_mode must be 'none', 'white_background_bbox', "
             "or 'dark_background_bbox', "
             f"got {config.object_crop_mode!r}"
+        )
+    if config.image_context_mode not in {
+        "none",
+        "dark_foreground_orientation",
+        "light_background_orientation",
+    }:
+        raise ValueError(
+            "image_context_mode must be 'none', 'dark_foreground_orientation', "
+            "or 'light_background_orientation', "
+            f"got {config.image_context_mode!r}."
+        )
+    if config.image_context_mode != "none" and config.image_context_extractor is not None:
+        raise ValueError(
+            "Configure either image_context_mode or image_context_extractor, not both."
         )
     if not 0 <= config.white_background_threshold <= 255:
         raise ValueError(
@@ -500,6 +520,68 @@ def load_rgb_image_raw(path: Path) -> np.ndarray:
     """Load one RGB image at source resolution."""
 
     return np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
+
+
+def _directed_principal_axis(rows: np.ndarray, cols: np.ndarray, image_path: Path) -> float:
+    """Estimate an axis and use the wider endpoint to resolve its direction."""
+    if len(rows) < 20:
+        raise ValueError(f"The foreground object is too small in {image_path}.")
+    points = np.column_stack((cols, rows)).astype(np.float64)
+    centered = points - points.mean(axis=0, keepdims=True)
+    _, eigenvectors = np.linalg.eigh(centered.T @ centered)
+    axis = eigenvectors[:, -1]
+    perpendicular = np.array([-axis[1], axis[0]])
+    along, across = centered @ axis, centered @ perpendicular
+    lower, upper = along <= np.quantile(along, 0.20), along >= np.quantile(along, 0.80)
+    lower_width = float(np.quantile(across[lower], 0.95) - np.quantile(across[lower], 0.05))
+    upper_width = float(np.quantile(across[upper], 0.95) - np.quantile(across[upper], 0.05))
+    if lower_width > upper_width:
+        axis = -axis
+    return float(np.arctan2(axis[1], axis[0]))
+
+
+def dark_foreground_orientation_context(image_path: Path, background_threshold: int = 40) -> float:
+    """Estimate a directed principal-axis angle for an object on a dark background."""
+    rgb = load_rgb_image_raw(image_path).astype(np.float32)
+    rows, cols = np.nonzero(rgb.max(axis=2) > float(background_threshold))
+    return _directed_principal_axis(rows, cols, image_path)
+
+
+def _otsu_threshold(grayscale: np.ndarray) -> float:
+    values = np.clip(grayscale, 0, 255).astype(np.uint8, copy=False)
+    histogram = np.bincount(values.reshape(-1), minlength=256).astype(np.float64)
+    probabilities = histogram / histogram.sum()
+    cumulative_probability = np.cumsum(probabilities)
+    cumulative_mean = np.cumsum(probabilities * np.arange(256, dtype=np.float64))
+    denominator = cumulative_probability * (1.0 - cumulative_probability)
+    variance = np.zeros(256, dtype=np.float64)
+    valid = denominator > 0.0
+    variance[valid] = (
+        cumulative_mean[-1] * cumulative_probability[valid] - cumulative_mean[valid]
+    ) ** 2 / denominator[valid]
+    return float(np.argmax(variance))
+
+
+def light_background_orientation_context(image_path: Path) -> float:
+    """Estimate a directed object axis for a darker object on a light background."""
+    grayscale = load_rgb_image_raw(image_path).astype(np.float32).mean(axis=2)
+    labels, count = ndimage.label(grayscale <= _otsu_threshold(grayscale))
+    if count == 0:
+        raise ValueError(f"Could not identify a foreground object in {image_path}.")
+    sizes = np.bincount(labels.reshape(-1)); sizes[0] = 0
+    rows, cols = np.nonzero(labels == int(np.argmax(sizes)))
+    return _directed_principal_axis(rows, cols, image_path)
+
+
+def extract_image_context(image_path: Path, config: PatchExtractionConfig) -> float | None:
+    """Extract optional per-image scalar context according to the loader config."""
+    if config.image_context_extractor is not None:
+        return float(config.image_context_extractor(image_path))
+    if config.image_context_mode == "dark_foreground_orientation":
+        return dark_foreground_orientation_context(image_path, config.dark_background_threshold)
+    if config.image_context_mode == "light_background_orientation":
+        return light_background_orientation_context(image_path)
+    return None
 
 
 def load_binary_mask(path: Path | None, image_size: tuple[int, int]) -> np.ndarray:
@@ -1902,6 +1984,13 @@ def build_patch_dataset_from_paths(
             patches[start:end] = image_patches
             labels[start:end] = image_labels
 
+    image_context: np.ndarray | None = None
+    if config.image_context_mode != "none" or config.image_context_extractor is not None:
+        values = [extract_image_context(path, config) for path in image_paths]
+        if any(value is None or not np.isfinite(value) for value in values):
+            raise ValueError("Image context extraction must return one finite value per image.")
+        image_context = np.asarray(values, dtype=np.float64)
+
     if forced_image_labels is not None:
         forced_image_labels = np.asarray(forced_image_labels, dtype=np.int8)
         if forced_image_labels.shape != (len(image_paths),):
@@ -1918,6 +2007,7 @@ def build_patch_dataset_from_paths(
         patches_per_image=patches_per_image,
         patch_image_indices=patch_image_indices,
         patch_local_indices=patch_local_indices,
+        image_context=image_context,
     )
 
 

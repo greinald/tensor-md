@@ -253,6 +253,9 @@ class LocationAwareTensorMahalanobisDetector:
         covariance_shrinkage_target: str = "pooled",
         score_normalization: str = "none",
         score_normalization_eps: float = 1e-8,
+        conditioning: str = "none",
+        conditioning_order: int = 4,
+        conditioning_ridge: float = 1e-3,
         verbose: bool = False,
         shared_score_location_batch_size: int = 32,
         location_fit_workers: int | None = None,
@@ -265,6 +268,9 @@ class LocationAwareTensorMahalanobisDetector:
         self.covariance_shrinkage_target = covariance_shrinkage_target
         self.score_normalization = score_normalization
         self.score_normalization_eps = score_normalization_eps
+        self.conditioning = conditioning
+        self.conditioning_order = conditioning_order
+        self.conditioning_ridge = conditioning_ridge
         self.verbose = verbose
         self.shared_score_location_batch_size = shared_score_location_batch_size
         self.location_fit_workers = (
@@ -284,6 +290,7 @@ class LocationAwareTensorMahalanobisDetector:
         self.global_covariance_state: TensorGaussianState | None = None
         # Optional per-location train-score statistics for score calibration.
         self.location_score_statistics: dict[str, np.ndarray] | None = None
+        self.conditioning_mean_coefficients: np.ndarray | None = None
         # Every image contributes this many local patch positions.
         self.patches_per_image = patches_per_image
         self.fit_timing: dict[str, float | int | bool | None] = {}
@@ -319,6 +326,50 @@ class LocationAwareTensorMahalanobisDetector:
                 "convergence_tol must be finite and non-negative, "
                 f"got {self.convergence_tol}."
             )
+        if self.conditioning not in {"none", "fourier_mean"}:
+            raise ValueError("conditioning must be 'none' or 'fourier_mean'.")
+        if not isinstance(self.conditioning_order, (int, np.integer)) or self.conditioning_order < 1:
+            raise ValueError("conditioning_order must be a positive integer.")
+        if not np.isfinite(self.conditioning_ridge) or self.conditioning_ridge < 0.0:
+            raise ValueError("conditioning_ridge must be finite and non-negative.")
+
+    def _conditioning_design(self, context, image_count: int, phase: str):
+        if self.conditioning == "none":
+            if context is not None:
+                raise ValueError(f"{phase} context was supplied, but conditioning='none'.")
+            return None
+        if context is None:
+            raise ValueError(f"{phase} requires context because conditioning='fourier_mean'.")
+        angles = np.asarray(context, dtype=np.float64)
+        if angles.ndim != 1 or len(angles) != image_count:
+            raise ValueError(f"{phase} context must contain one value per image.")
+        if not np.all(np.isfinite(angles)):
+            raise ValueError(f"{phase} context contains non-finite values.")
+        columns = [np.ones(image_count, dtype=np.float64)]
+        for harmonic in range(1, self.conditioning_order + 1):
+            columns.extend((np.sqrt(2.0) * np.cos(harmonic * angles),
+                            np.sqrt(2.0) * np.sin(harmonic * angles)))
+        return np.column_stack(columns)
+
+    def _fit_conditioning_mean(self, patches_by_image, design):
+        if design is None:
+            self.conditioning_mean_coefficients = None
+            return patches_by_image
+        targets = patches_by_image.reshape(len(patches_by_image), -1).astype(np.float64, copy=False)
+        penalty = np.eye(design.shape[1], dtype=np.float64) * self.conditioning_ridge
+        penalty[0, 0] = 0.0
+        coefficients = np.linalg.solve(design.T @ design + penalty, design.T @ targets)
+        self.conditioning_mean_coefficients = coefficients.astype(np.float32)
+        prediction = design.astype(np.float32) @ self.conditioning_mean_coefficients
+        return patches_by_image - prediction.reshape(patches_by_image.shape)
+
+    def _remove_conditioning_mean(self, patches_by_image, design):
+        if design is None:
+            return patches_by_image
+        if self.conditioning_mean_coefficients is None:
+            raise RuntimeError("The conditional mean has not been fitted.")
+        prediction = design.astype(np.float32) @ self.conditioning_mean_coefficients
+        return patches_by_image - prediction.reshape(patches_by_image.shape)
 
     def _validate_mean_shrinkage(self) -> None:
         if not 0.0 <= self.mean_shrinkage <= 1.0:
@@ -886,6 +937,8 @@ class LocationAwareTensorMahalanobisDetector:
     def fit_from_patch_batches(self, patch_batch_factory) -> "LocationAwareTensorMahalanobisDetector":
         """Fit from repeatable batches shaped (batch_images, locations, h, w, c)."""
 
+        if self.conditioning != "none":
+            raise ValueError("Conditional means require fit(patches, context=...).")
         fit_start = time.perf_counter()
         self._validate_mean_shrinkage()
         self._validate_shrinkage()
@@ -1017,7 +1070,7 @@ class LocationAwareTensorMahalanobisDetector:
         }
         return self
 
-    def fit(self, patches: np.ndarray) -> "LocationAwareTensorMahalanobisDetector":
+    def fit(self, patches: np.ndarray, context: np.ndarray | None = None) -> "LocationAwareTensorMahalanobisDetector":
         fit_start = time.perf_counter()
         self._validate_mean_shrinkage()
         self._validate_shrinkage()
@@ -1033,6 +1086,10 @@ class LocationAwareTensorMahalanobisDetector:
         reshape_start = time.perf_counter()
         patches_by_image = self._reshape_by_image(patches)
         reshape_seconds = time.perf_counter() - reshape_start
+        conditioning_start = time.perf_counter()
+        design = self._conditioning_design(context, patches_by_image.shape[0], "fit")
+        patches_by_image = self._fit_conditioning_mean(patches_by_image, design)
+        conditioning_seconds = time.perf_counter() - conditioning_start
 
         mean_start = time.perf_counter()
         raw_location_means = patches_by_image.mean(axis=0)
@@ -1082,6 +1139,10 @@ class LocationAwareTensorMahalanobisDetector:
 
         self.fit_timing = {
             "reshape_seconds": reshape_seconds,
+            "conditioning_mean_fit_seconds": conditioning_seconds,
+            "conditioning": self.conditioning,
+            "conditioning_order": self.conditioning_order,
+            "conditioning_ridge": self.conditioning_ridge,
             "location_mean_seconds": mean_seconds,
             "residual_build_seconds": residual_seconds,
             "location_count": float(self.patches_per_image),
@@ -1124,7 +1185,12 @@ class LocationAwareTensorMahalanobisDetector:
         }
         return self
 
-    def score(self, patches: np.ndarray) -> np.ndarray:
+    def fit_dataset(self, dataset) -> "LocationAwareTensorMahalanobisDetector":
+        if not hasattr(dataset, "patches"):
+            raise TypeError("dataset must provide a 'patches' array.")
+        return self.fit(dataset.patches, context=getattr(dataset, "image_context", None))
+
+    def score(self, patches: np.ndarray, context: np.ndarray | None = None) -> np.ndarray:
         if self.location_means is None or self.location_covariance_states is None:
             raise RuntimeError("Call fit() before score().")
 
@@ -1139,6 +1205,10 @@ class LocationAwareTensorMahalanobisDetector:
         reshape_start = time.perf_counter()
         patches_by_image = self._reshape_by_image(patches)
         reshape_seconds = time.perf_counter() - reshape_start
+        conditioning_start = time.perf_counter()
+        design = self._conditioning_design(context, patches_by_image.shape[0], "score")
+        patches_by_image = self._remove_conditioning_mean(patches_by_image, design)
+        conditioning_seconds = time.perf_counter() - conditioning_start
 
         residual_start = time.perf_counter()
         residuals_by_image = patches_by_image - self.location_means[None, ...]
@@ -1226,6 +1296,8 @@ class LocationAwareTensorMahalanobisDetector:
         covariance_seconds = time.perf_counter() - covariance_start
         self.score_timing = {
             "reshape_seconds": reshape_seconds,
+            "conditioning_mean_seconds": conditioning_seconds,
+            "conditioning": self.conditioning,
             "residual_build_seconds": residual_seconds,
             "location_covariance_score_seconds": covariance_seconds,
             "shared_covariance_score_seconds": covariance_seconds,
@@ -1237,6 +1309,11 @@ class LocationAwareTensorMahalanobisDetector:
         }
         normalized_scores_by_image = self._normalize_scores_by_location(scores_by_image)
         return normalized_scores_by_image.reshape(-1)
+
+    def score_dataset(self, dataset) -> np.ndarray:
+        if not hasattr(dataset, "patches"):
+            raise TypeError("dataset must provide a 'patches' array.")
+        return self.score(dataset.patches, context=getattr(dataset, "image_context", None))
 
 
 class NeighborhoodScoreLocationAwareTensorMahalanobisDetector(LocationAwareTensorMahalanobisDetector):
@@ -1313,8 +1390,8 @@ class NeighborhoodScoreLocationAwareTensorMahalanobisDetector(LocationAwareTenso
                 f"but patches_per_image={self.patches_per_image}."
             )
 
-    def fit(self, patches: np.ndarray) -> "NeighborhoodScoreLocationAwareTensorMahalanobisDetector":
-        super().fit(patches)
+    def fit(self, patches: np.ndarray, context: np.ndarray | None = None) -> "NeighborhoodScoreLocationAwareTensorMahalanobisDetector":
+        super().fit(patches, context=context)
         if (
             self.score_neighbor_pooling == "weighted_mean"
             and self.score_neighbor_sigma_range is not None
@@ -1352,8 +1429,8 @@ class NeighborhoodScoreLocationAwareTensorMahalanobisDetector(LocationAwareTenso
             )
         return self
 
-    def score(self, patches: np.ndarray) -> np.ndarray:
-        base_scores = super().score(patches)
+    def score(self, patches: np.ndarray, context: np.ndarray | None = None) -> np.ndarray:
+        base_scores = super().score(patches, context=context)
         pooling_start = time.perf_counter()
         scores_by_image = self._reshape_by_image(base_scores[:, None])[..., 0]
         if self.score_neighbor_sigma_range is None:

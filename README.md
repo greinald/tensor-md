@@ -153,6 +153,38 @@ scores = detector.score(images)
 
 The product of `grid_shape` must equal `patches_per_image`.
 
+## Optional orientation-conditioned mean
+
+For an elongated object whose position is stable but whose orientation changes,
+the detector can model the expected feature mean as a smooth function of the
+object angle. The covariance model remains location-specific and is fitted to
+the residuals after subtracting that conditional mean.
+
+```python
+config = PatchExtractionConfig(
+    train_image_dir="data/normal",
+    test_image_dir="data/to_check",
+    input_representation="cnn_features",
+    image_context_mode="light_background_orientation",
+)
+datasets = load_patch_datasets(config)
+
+detector = LocationAwareTensorMahalanobisDetector(
+    patches_per_image=datasets.train.patches_per_image,
+    conditioning="fourier_mean",
+    conditioning_order=4,
+    conditioning_ridge=1e-3,
+)
+detector.fit_dataset(datasets.train)
+scores = detector.score_dataset(datasets.test)
+```
+
+Use `dark_foreground_orientation` for a bright object on a dark background.
+For other geometries, supply `image_context_extractor=callable`; it receives an
+image path and must return one finite scalar in radians. This option does not
+rotate or crop images. It is intended only when the extracted angle has a clear,
+consistent meaning for every image.
+
 ## Score diagnostics
 
 Diagnostics are optional and do not require anomaly labels. They compare the
