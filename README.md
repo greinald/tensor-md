@@ -153,6 +153,11 @@ scores = detector.score(images)
 
 The product of `grid_shape` must equal `patches_per_image`.
 
+Set `score_neighbor_pooling="median"` to suppress isolated score spikes while
+retaining responses supported by several nearby grid locations. For example,
+radius one applies a 3 x 3 median window. The available pooling modes are
+`"mean"`, `"max"`, `"median"`, and `"weighted_mean"`.
+
 ## Optional orientation-conditioned mean
 
 For an elongated object whose position is stable but whose orientation changes,

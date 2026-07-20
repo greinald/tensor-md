@@ -124,9 +124,9 @@ def aggregate_location_scores(
 ) -> np.ndarray:
     """Pool already-computed location scores over spatial neighborhoods."""
 
-    if pooling not in {"mean", "max", "weighted_mean"}:
+    if pooling not in {"mean", "max", "median", "weighted_mean"}:
         raise ValueError(
-            "pooling must be 'mean', 'max', or 'weighted_mean', "
+            "pooling must be 'mean', 'max', 'median', or 'weighted_mean', "
             f"got {pooling!r}."
         )
     if scores_by_image.shape[1] != len(neighbor_indices_by_location):
@@ -150,6 +150,8 @@ def aggregate_location_scores(
             pooled[:, location_index] = neighbor_scores.mean(axis=1)
         elif pooling == "max":
             pooled[:, location_index] = neighbor_scores.max(axis=1)
+        elif pooling == "median":
+            pooled[:, location_index] = np.median(neighbor_scores, axis=1)
         else:
             weights = neighbor_weights_by_location[location_index]
             if len(weights) != len(neighbor_indices):
@@ -179,9 +181,9 @@ def aggregate_regular_grid_scores(
         )
     if radius < 0:
         raise ValueError(f"radius must be non-negative, got {radius}.")
-    if pooling not in {"mean", "max", "weighted_mean"}:
+    if pooling not in {"mean", "max", "median", "weighted_mean"}:
         raise ValueError(
-            "pooling must be 'mean', 'max', or 'weighted_mean', "
+            "pooling must be 'mean', 'max', 'median', or 'weighted_mean', "
             f"got {pooling!r}."
         )
     if radius == 0:
@@ -202,6 +204,24 @@ def aggregate_regular_grid_scores(
             axis=(1, 2),
         )
         return windows.max(axis=(-2, -1)).reshape(scores_by_image.shape)
+
+    if pooling == "median":
+        # Replicate the closest valid boundary score so every output location
+        # has the same odd-sized window without introducing artificial zeros.
+        padded = np.pad(
+            grid,
+            ((0, 0), (radius, radius), (radius, radius)),
+            mode="edge",
+        )
+        windows = np.lib.stride_tricks.sliding_window_view(
+            padded,
+            (window_size, window_size),
+            axis=(1, 2),
+        )
+        return np.median(windows, axis=(-2, -1)).astype(
+            scores_by_image.dtype,
+            copy=False,
+        ).reshape(scores_by_image.shape)
 
     if pooling == "mean":
         kernel = np.ones((window_size, window_size), dtype=np.float64)
@@ -1340,9 +1360,10 @@ class NeighborhoodScoreLocationAwareTensorMahalanobisDetector(LocationAwareTenso
             or not all(isinstance(size, (int, np.integer)) and size > 0 for size in grid_shape)
         ):
             raise ValueError(f"grid_shape must contain two positive integers, got {grid_shape!r}.")
-        if score_neighbor_pooling not in {"mean", "max", "weighted_mean"}:
+        if score_neighbor_pooling not in {"mean", "max", "median", "weighted_mean"}:
             raise ValueError(
-                "score_neighbor_pooling must be 'mean', 'max', or 'weighted_mean', "
+                "score_neighbor_pooling must be 'mean', 'max', 'median', or "
+                "'weighted_mean', "
                 f"got {score_neighbor_pooling!r}."
             )
         self.neighbor_indices_by_location = location_neighbors(

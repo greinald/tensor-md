@@ -19,6 +19,9 @@ from tensor_md.Data_Loading import (
     _align_and_stack_feature_map_batches,
     resolve_data_root,
 )
+from tensor_md.location_aware_tensor_mahalanobis_detector import (
+    aggregate_regular_grid_scores,
+)
 from tensor_md.patch_estimators import (
     _fit_tensor_separable_model_from_centered,
     _score_tensor_separable_model,
@@ -141,6 +144,28 @@ def test_neighborhood_detector_round_trip(tmp_path):
     model_path = detector.save(tmp_path / "neighborhood.pkl")
     restored = NeighborhoodScoreLocationAwareTensorMahalanobisDetector.load(model_path)
     np.testing.assert_allclose(restored.score(patches), detector.score(patches))
+
+
+def test_regular_grid_median_pooling_rejects_isolated_peak():
+    scores = np.zeros((1, 9), dtype=np.float32)
+    scores[0, 4] = 100.0
+    pooled = aggregate_regular_grid_scores(
+        scores_by_image=scores,
+        grid_shape=(3, 3),
+        radius=1,
+        pooling="median",
+    )
+    np.testing.assert_array_equal(pooled, np.zeros_like(scores))
+
+    supported = scores.reshape(1, 3, 3).copy()
+    supported[:, 0:2, 0:2] = 10.0
+    pooled = aggregate_regular_grid_scores(
+        supported.reshape(1, -1),
+        (3, 3),
+        1,
+        "median",
+    )
+    assert pooled.reshape(1, 3, 3)[0, 0, 0] == 10.0
 
 
 def test_save_requires_fitted_model(tmp_path):
