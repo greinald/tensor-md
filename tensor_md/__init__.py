@@ -1,6 +1,6 @@
 """Public package API for the tensor-valued anomaly detector."""
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 from .Data_Loading import (
     PatchExtractionConfig,
     extract_cnn_feature_maps,
