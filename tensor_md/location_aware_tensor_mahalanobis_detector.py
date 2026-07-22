@@ -260,7 +260,7 @@ def aggregate_regular_grid_scores(
 
 
 class LocationAwareTensorMahalanobisDetector:
-    """Location-aware tensor Mahalanobis detector with one mean and covariance per location."""
+    """Tensor Mahalanobis detector with configurable spatial parameter sharing."""
 
     def __init__(
         self,
@@ -306,9 +306,11 @@ class LocationAwareTensorMahalanobisDetector:
         self.location_aware_covariance_state: TensorGaussianState | None = None
         # Backward-compatible alias for older call sites.
         self.covariance_state: TensorGaussianState | None = None
-        # Optional global covariance fit used only as a shrinkage target.
+        # Optional global covariance fit used as a target or fully shared state.
         self.global_covariance_state: TensorGaussianState | None = None
-        # Optional per-location train-score statistics for score calibration.
+        # Optional train-score statistics for global or per-location calibration.
+        self.score_statistics: dict[str, np.ndarray] | None = None
+        # Backward-compatible alias retained for already serialized detectors.
         self.location_score_statistics: dict[str, np.ndarray] | None = None
         self.conditioning_mean_coefficients: np.ndarray | None = None
         # Every image contributes this many local patch positions.
@@ -442,9 +444,16 @@ class LocationAwareTensorMahalanobisDetector:
         return states, target, time.perf_counter() - start
 
     def _validate_score_normalization(self) -> None:
-        if self.score_normalization not in {"none", "zscore"}:
+        if self.score_normalization not in {
+            "none",
+            "zscore",
+            "location_zscore",
+            "global_zscore",
+        }:
             raise ValueError(
-                "score_normalization must be 'none' or 'zscore', "
+                "score_normalization must be 'none', 'location_zscore', or "
+                "'global_zscore' ('zscore' is retained as an alias for "
+                "'location_zscore'), "
                 f"got {self.score_normalization!r}."
             )
         if self.score_normalization_eps <= 0.0:
@@ -452,6 +461,15 @@ class LocationAwareTensorMahalanobisDetector:
                 "score_normalization_eps must be positive, "
                 f"got {self.score_normalization_eps}."
             )
+
+    def _score_normalization_scope(self) -> str:
+        """Return the explicit spatial scope of train-score calibration."""
+
+        if self.score_normalization == "none":
+            return "none"
+        if self.score_normalization in {"zscore", "location_zscore"}:
+            return "location"
+        return "global"
 
     def _log(self, message: str) -> None:
         if self.verbose:
@@ -883,7 +901,7 @@ class LocationAwareTensorMahalanobisDetector:
             "location_count": len(states),
         }
 
-    def _compute_location_score_statistics(
+    def _compute_score_statistics(
         self,
         residuals_by_image: np.ndarray,
     ) -> dict[str, np.ndarray] | None:
@@ -892,21 +910,26 @@ class LocationAwareTensorMahalanobisDetector:
         if self.location_covariance_states is None:
             raise RuntimeError("location_covariance_states must be available before score calibration.")
 
-        location_means = np.empty(self.patches_per_image, dtype=np.float64)
-        location_stds = np.empty(self.patches_per_image, dtype=np.float64)
+        scores_by_image = np.empty(
+            (residuals_by_image.shape[0], self.patches_per_image),
+            dtype=np.float64,
+        )
         for location_index, state in enumerate(self.location_covariance_states):
-            location_scores = _score_tensor_separable_model(
+            scores_by_image[:, location_index] = _score_tensor_separable_model(
                 state,
                 residuals_by_image[:, location_index, ...],
             )
-            location_means[location_index] = float(np.mean(location_scores))
-            location_stds[location_index] = float(np.std(location_scores))
+        if self._score_normalization_scope() == "global":
+            return {
+                "mean": np.asarray([np.mean(scores_by_image)], dtype=np.float64),
+                "std": np.asarray([np.std(scores_by_image)], dtype=np.float64),
+            }
         return {
-            "mean": location_means,
-            "std": location_stds,
+            "mean": np.mean(scores_by_image, axis=0),
+            "std": np.std(scores_by_image, axis=0),
         }
 
-    def _compute_location_score_statistics_from_batches(
+    def _compute_score_statistics_from_batches(
         self,
         patch_batch_factory,
     ) -> dict[str, np.ndarray] | None:
@@ -930,8 +953,16 @@ class LocationAwareTensorMahalanobisDetector:
                 score_sum_sq[location_index] += float(np.sum(location_scores * location_scores))
                 score_count[location_index] += len(location_scores)
 
-        means = score_sum / np.maximum(score_count, 1)
-        variances = (score_sum_sq / np.maximum(score_count, 1)) - (means * means)
+        if self._score_normalization_scope() == "global":
+            total_count = max(int(np.sum(score_count)), 1)
+            means = np.asarray([np.sum(score_sum) / total_count], dtype=np.float64)
+            variances = np.asarray(
+                [np.sum(score_sum_sq) / total_count - means[0] * means[0]],
+                dtype=np.float64,
+            )
+        else:
+            means = score_sum / np.maximum(score_count, 1)
+            variances = (score_sum_sq / np.maximum(score_count, 1)) - (means * means)
         variances = np.maximum(variances, 0.0)
         return {
             "mean": means,
@@ -944,12 +975,15 @@ class LocationAwareTensorMahalanobisDetector:
     ) -> np.ndarray:
         if self.score_normalization == "none":
             return scores_by_image
-        if self.location_score_statistics is None:
-            raise RuntimeError("location_score_statistics are missing for score normalization.")
+        statistics = self.score_statistics
+        if statistics is None:
+            statistics = self.location_score_statistics
+        if statistics is None:
+            raise RuntimeError("score_statistics are missing for score normalization.")
 
-        if self.score_normalization == "zscore":
-            mean = self.location_score_statistics["mean"][None, :]
-            std = self.location_score_statistics["std"][None, :]
+        if self._score_normalization_scope() in {"location", "global"}:
+            mean = statistics["mean"][None, :]
+            std = statistics["std"][None, :]
             return (scores_by_image - mean) / np.maximum(std, self.score_normalization_eps)
 
         raise RuntimeError(f"Unsupported score_normalization {self.score_normalization!r}.")
@@ -1041,9 +1075,10 @@ class LocationAwareTensorMahalanobisDetector:
             sample_shape=sample_shape,
         )
         self.covariance_state = self.location_aware_covariance_state
-        self.location_score_statistics = self._compute_location_score_statistics_from_batches(
+        self.score_statistics = self._compute_score_statistics_from_batches(
             patch_batch_factory=patch_batch_factory,
         )
+        self.location_score_statistics = self.score_statistics
 
         self.fit_timing = {
             "streaming_fit": True,
@@ -1059,6 +1094,7 @@ class LocationAwareTensorMahalanobisDetector:
             "covariance_shrinkage": self.covariance_shrinkage,
             "covariance_shrinkage_target": self.covariance_shrinkage_target,
             "score_normalization": self.score_normalization,
+            "score_normalization_scope": self._score_normalization_scope(),
             "location_fit_workers": self.location_fit_workers,
             "location_aware_converged": all(
                 bool(state["converged"]) for state in self.location_covariance_states
@@ -1153,9 +1189,10 @@ class LocationAwareTensorMahalanobisDetector:
             sample_shape=sample_shape,
         )
         self.covariance_state = self.location_aware_covariance_state
-        self.location_score_statistics = self._compute_location_score_statistics(
+        self.score_statistics = self._compute_score_statistics(
             residuals_by_image=residuals_by_image,
         )
+        self.location_score_statistics = self.score_statistics
 
         self.fit_timing = {
             "reshape_seconds": reshape_seconds,
@@ -1174,6 +1211,7 @@ class LocationAwareTensorMahalanobisDetector:
             "covariance_shrinkage": self.covariance_shrinkage,
             "covariance_shrinkage_target": self.covariance_shrinkage_target,
             "score_normalization": self.score_normalization,
+            "score_normalization_scope": self._score_normalization_scope(),
             "location_fit_workers": self.location_fit_workers,
             "location_aware_converged": all(
                 bool(state["converged"]) for state in self.location_covariance_states
@@ -1322,6 +1360,7 @@ class LocationAwareTensorMahalanobisDetector:
             "location_covariance_score_seconds": covariance_seconds,
             "shared_covariance_score_seconds": covariance_seconds,
             "score_normalization": self.score_normalization,
+            "score_normalization_scope": self._score_normalization_scope(),
             "center_seconds": score_center_seconds,
             "whitening_seconds": score_whitening_seconds,
             "norm_seconds": score_norm_seconds,

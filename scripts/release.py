@@ -21,7 +21,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
+PACKAGE_INIT = ROOT / "tensor_md" / "__init__.py"
 VERSION_PATTERN = re.compile(r'^(version\s*=\s*")(?P<version>\d+\.\d+\.\d+)(")\s*$', re.MULTILINE)
+PACKAGE_VERSION_PATTERN = re.compile(
+    r'^(__version__\s*=\s*")(?P<version>\d+\.\d+\.\d+)(")\s*$',
+    re.MULTILINE,
+)
 
 
 def run(*command: str) -> None:
@@ -36,6 +41,13 @@ def output(*command: str) -> str:
 def project_version() -> str:
     with PYPROJECT.open("rb") as handle:
         return tomllib.load(handle)["project"]["version"]
+
+
+def package_version() -> str:
+    match = PACKAGE_VERSION_PATTERN.search(PACKAGE_INIT.read_text(encoding="utf-8"))
+    if match is None:
+        raise RuntimeError("Could not find tensor_md.__version__.")
+    return match.group("version")
 
 
 def bump(version: str, kind: str) -> str:
@@ -53,6 +65,15 @@ def replace_version(text: str, new_version: str) -> str:
     )
     if replacements != 1:
         raise RuntimeError("Could not find one PEP 621 version field in pyproject.toml.")
+    return updated
+
+
+def replace_package_version(text: str, new_version: str) -> str:
+    updated, replacements = PACKAGE_VERSION_PATTERN.subn(
+        lambda match: f'{match.group(1)}{new_version}{match.group(3)}', text, count=1
+    )
+    if replacements != 1:
+        raise RuntimeError("Could not find one tensor_md.__version__ field.")
     return updated
 
 
@@ -117,6 +138,12 @@ def main() -> None:
 
     require_clean_checkout()
     current = project_version()
+    imported_current = package_version()
+    if imported_current != current:
+        raise RuntimeError(
+            "Version mismatch before release: pyproject.toml contains "
+            f"{current}, while tensor_md.__version__ contains {imported_current}."
+        )
     next_version = bump(current, bump_kind)
     tag = f"v{next_version}"
     if output("git", "tag", "-l", tag):
@@ -127,7 +154,11 @@ def main() -> None:
         return
 
     original_pyproject = PYPROJECT.read_text(encoding="utf-8")
+    original_package_init = PACKAGE_INIT.read_text(encoding="utf-8")
     PYPROJECT.write_text(replace_version(original_pyproject, next_version), encoding="utf-8")
+    PACKAGE_INIT.write_text(
+        replace_package_version(original_package_init, next_version), encoding="utf-8"
+    )
     committed = False
     try:
         ensure_release_tools()
@@ -139,7 +170,7 @@ def main() -> None:
                 raise RuntimeError("The build produced no distribution files.")
             run(sys.executable, "-m", "twine", "check", *distributions)
 
-        run("git", "add", "pyproject.toml")
+        run("git", "add", "pyproject.toml", "tensor_md/__init__.py")
         run("git", "commit", "-m", f"Release v{next_version}")
         committed = True
         run("git", "tag", "-a", tag, "-m", f"Release {tag}")
@@ -152,6 +183,7 @@ def main() -> None:
     except Exception:
         if not committed:
             PYPROJECT.write_text(original_pyproject, encoding="utf-8")
+            PACKAGE_INIT.write_text(original_package_init, encoding="utf-8")
         raise
 
 

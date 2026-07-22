@@ -47,6 +47,70 @@ def _small_patch_dataset():
     return np.random.default_rng(12).normal(size=(12, 1, 1, 2, 2)).astype(np.float32)
 
 
+def _score_calibration_dataset():
+    rng = np.random.default_rng(7)
+    patches = rng.normal(size=(24, 4, 1, 1, 3)).astype(np.float32)
+    patches[:, 1] += 0.4
+    patches[:, 2] *= 1.3
+    return patches
+
+
+def test_score_calibration_scopes_and_legacy_alias():
+    patches_by_image = _score_calibration_dataset()
+    patches = patches_by_image.reshape(-1, 1, 1, 3)
+    scores = {}
+
+    for mode in ("none", "zscore", "location_zscore", "global_zscore"):
+        detector = LocationAwareTensorMahalanobisDetector(
+            patches_per_image=4,
+            iterations=2,
+            mean_shrinkage=1.0,
+            covariance_shrinkage=1.0,
+            score_normalization=mode,
+            location_fit_workers=1,
+        ).fit(patches)
+        scores[mode] = detector.score(patches).reshape(24, 4)
+
+        if mode == "none":
+            assert detector.score_statistics is None
+        elif mode == "global_zscore":
+            assert detector.score_statistics["mean"].shape == (1,)
+            assert detector.fit_timing["score_normalization_scope"] == "global"
+        else:
+            assert detector.score_statistics["mean"].shape == (4,)
+            assert detector.fit_timing["score_normalization_scope"] == "location"
+
+    np.testing.assert_allclose(scores["zscore"], scores["location_zscore"])
+    np.testing.assert_allclose(scores["location_zscore"].mean(axis=0), 0.0, atol=2e-5)
+    assert abs(float(scores["global_zscore"].mean())) < 2e-5
+    np.testing.assert_array_equal(
+        np.argsort(scores["none"], axis=None),
+        np.argsort(scores["global_zscore"], axis=None),
+    )
+
+
+def test_global_score_calibration_supports_streaming_fit():
+    patches_by_image = _score_calibration_dataset()
+
+    def batches():
+        yield patches_by_image[:9]
+        yield patches_by_image[9:17]
+        yield patches_by_image[17:]
+
+    detector = LocationAwareTensorMahalanobisDetector(
+        patches_per_image=4,
+        iterations=2,
+        mean_shrinkage=1.0,
+        covariance_shrinkage=1.0,
+        score_normalization="global_zscore",
+        location_fit_workers=1,
+    ).fit_from_patch_batches(batches)
+
+    scores = detector.score(patches_by_image.reshape(-1, 1, 1, 3))
+    assert detector.score_statistics["mean"].shape == (1,)
+    assert abs(float(np.mean(scores))) < 2e-5
+
+
 def test_detector_fit_score_and_save_load_round_trip(tmp_path):
     patches = _small_patch_dataset()
     detector = LocationAwareTensorMahalanobisDetector(

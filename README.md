@@ -68,6 +68,41 @@ Training and scoring images must use the same configuration. Location-aware
 modelling is most useful when images are approximately aligned, so the same
 grid location usually represents the same object part or texture region.
 
+## Optional score calibration
+
+Raw tensor Mahalanobis scores already use the fitted mean and covariance.
+Optional z-score calibration runs the fitted detector on the normal training
+set and stores statistics of those scalar training scores. Its spatial scope is
+explicit and independent of mean or covariance shrinkage:
+
+```python
+# One score mean and standard deviation per location.
+detector = LocationAwareTensorMahalanobisDetector(
+    patches_per_image=normal.patches_per_image,
+    score_normalization="location_zscore",
+)
+
+# One score mean and standard deviation shared by all locations.
+detector = LocationAwareTensorMahalanobisDetector(
+    patches_per_image=normal.patches_per_image,
+    score_normalization="global_zscore",
+)
+```
+
+The available settings are:
+
+- `"none"`: retain raw Mahalanobis scores; this is the default.
+- `"location_zscore"`: calibrate each location separately. This intentionally
+  adds location-specific calibration even when the fitted mean and covariance
+  are fully shared.
+- `"global_zscore"`: apply one calibration to every location. Because this is
+  the same positive affine transformation for every score, it preserves score
+  ordering and is mainly useful for a common threshold scale.
+- `"zscore"`: backward-compatible alias for `"location_zscore"`.
+
+Calibration statistics are learned only from normal training scores. Test-set
+statistics are never used.
+
 ## Using CNN features
 
 Set `input_representation="cnn_features"` to model intermediate CNN features
