@@ -139,6 +139,40 @@ def test_local_average_covariance_target_fits_and_scores():
     assert detector.fit_timing["covariance_shrinkage_target"] == "local_average"
 
 
+@pytest.mark.parametrize("covariance_shrinkage", [0.0, 0.5, 1.0])
+def test_covariance_release_preserves_scores(covariance_shrinkage):
+    patches_by_image = np.random.default_rng(41).normal(
+        size=(12, 4, 1, 1, 3, 2)
+    ).astype(np.float32)
+    patches = patches_by_image.reshape(-1, 1, 1, 3, 2)
+    common = dict(
+        patches_per_image=4,
+        iterations=2,
+        covariance_shrinkage=covariance_shrinkage,
+        covariance_shrinkage_target=(
+            "local_average" if covariance_shrinkage == 0.5 else "pooled"
+        ),
+        score_normalization="zscore",
+        location_fit_workers=1,
+    )
+    retained = LocationAwareTensorMahalanobisDetector(
+        **common, retain_covariances=True
+    ).fit(patches)
+    released = LocationAwareTensorMahalanobisDetector(
+        **common, retain_covariances=False
+    ).fit(patches)
+
+    np.testing.assert_allclose(
+        released.score(patches), retained.score(patches), rtol=1e-6, atol=1e-6
+    )
+    assert any(
+        "covariances" in state for state in retained.location_covariance_states
+    )
+    assert all(
+        "covariances" not in state for state in released.location_covariance_states
+    )
+
+
 def test_local_average_target_requires_intermediate_shrinkage():
     patches = _small_patch_dataset()
     detector = LocationAwareTensorMahalanobisDetector(

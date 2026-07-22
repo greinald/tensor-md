@@ -279,6 +279,7 @@ class LocationAwareTensorMahalanobisDetector:
         verbose: bool = False,
         shared_score_location_batch_size: int = 32,
         location_fit_workers: int | None = None,
+        retain_covariances: bool = False,
     ) -> None:
         self.iterations = iterations
         self.eps = eps
@@ -292,6 +293,7 @@ class LocationAwareTensorMahalanobisDetector:
         self.conditioning_order = conditioning_order
         self.conditioning_ridge = conditioning_ridge
         self.verbose = verbose
+        self.retain_covariances = retain_covariances
         self.shared_score_location_batch_size = shared_score_location_batch_size
         self.location_fit_workers = (
             os.cpu_count() or 1
@@ -354,6 +356,28 @@ class LocationAwareTensorMahalanobisDetector:
             raise ValueError("conditioning_order must be a positive integer.")
         if not np.isfinite(self.conditioning_ridge) or self.conditioning_ridge < 0.0:
             raise ValueError("conditioning_ridge must be finite and non-negative.")
+
+    def _release_fitted_covariances(self) -> None:
+        """Drop covariance factors after final inference factors are available."""
+
+        if self.retain_covariances:
+            return
+        states: list[TensorGaussianState] = []
+        if self.location_covariance_states is not None:
+            states.extend(self.location_covariance_states)
+        for state in (
+            self.location_aware_covariance_state,
+            self.covariance_state,
+            self.global_covariance_state,
+        ):
+            if state is not None:
+                states.append(state)
+        seen: set[int] = set()
+        for state in states:
+            if id(state) in seen:
+                continue
+            seen.add(id(state))
+            state.pop("covariances", None)
 
     def _conditioning_design(self, context, image_count: int, phase: str):
         if self.conditioning == "none":
@@ -1124,6 +1148,10 @@ class LocationAwareTensorMahalanobisDetector:
             ),
             "total_seconds": time.perf_counter() - fit_start,
         }
+        self._release_fitted_covariances()
+        self.fit_timing["covariance_factors_retained"] = bool(
+            self.retain_covariances
+        )
         return self
 
     def fit(self, patches: np.ndarray, context: np.ndarray | None = None) -> "LocationAwareTensorMahalanobisDetector":
@@ -1241,6 +1269,10 @@ class LocationAwareTensorMahalanobisDetector:
             ),
             "total_seconds": time.perf_counter() - fit_start,
         }
+        self._release_fitted_covariances()
+        self.fit_timing["covariance_factors_retained"] = bool(
+            self.retain_covariances
+        )
         return self
 
     def fit_dataset(self, dataset) -> "LocationAwareTensorMahalanobisDetector":

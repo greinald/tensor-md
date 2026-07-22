@@ -64,6 +64,11 @@ scores = detector.score(images)
 score_maps = scores.reshape(len(images.image_paths), images.patches_per_image)
 ```
 
+After fitting, the detector retains the inverse-square-root factors required
+for scoring and releases the now-redundant covariance factors by default. Set
+`retain_covariances=True` only when the original fitted covariance matrices are
+needed for inspection or diagnostics.
+
 Training and scoring images must use the same configuration. Location-aware
 modelling is most useful when images are approximately aligned, so the same
 grid location usually represents the same object part or texture region.
